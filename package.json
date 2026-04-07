@@ -1,0 +1,11 @@
+{
+  "name": "jri-pipeline-pptx",
+  "version": "1.0.0",
+  "description": "JRI Living Lab+ AI Scenario Pipeline — PPTX Generator",
+  "scripts": {
+    "pptx": "node generate_pptx.js"
+  },
+  "dependencies": {
+    "pptxgenjs": "^4.0.1"
+  }
+}

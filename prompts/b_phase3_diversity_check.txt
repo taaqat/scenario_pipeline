@@ -1,0 +1,27 @@
+You are reviewing a shortlist of {count} weak signals selected for an Unexpected Scenarios project about {topic}.
+
+Your task: identify signals that are too similar to each other — covering essentially the same topic or trend from a slightly different angle. For each cluster of similar signals, recommend keeping only the BEST one (highest novelty + social impact).
+
+# Rules
+- "Similar" means: same underlying phenomenon, same technology, same social change, just reported from different sources or angles
+- Keep the signal with the most unique/novel angle AND the highest potential social impact
+- Only list signals that are near-duplicates — do NOT list unique signals
+
+# Selected Signals
+
+{signals_json}
+
+# Output — respond ONLY with JSON, no other text
+# Only output clusters where duplicates were found. Signals not listed in any cluster are automatically kept.
+```json
+{{
+  "clusters": [
+    {{
+      "theme_ja": "what these signals share (Japanese)",
+      "signal_ids": ["id1", "id2", "..."],
+      "keep_id": "id of the best one to keep",
+      "reasoning_ja": "why this one is best (Japanese)"
+    }}
+  ]
+}}
+```

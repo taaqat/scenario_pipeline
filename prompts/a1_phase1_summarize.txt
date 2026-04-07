@@ -1,0 +1,23 @@
+You are an expert in industry trend analysis. Read the following batch of Japanese articles and extract the core claims, data points, and trend directions from each.
+
+# Instructions
+- Produce a concise summary (3-5 lines, approximately 80-120 words) for each article
+- Always preserve numerical data, years, and source attributions
+- Focus on structural changes relevant to: {topic}
+
+# Output Format — respond ONLY with a JSON array, no other text
+```json
+[
+  {{
+    "article_id": "original article ID",
+    "title_ja": "article title in Japanese",
+    "source": "publication / source name",
+    "summary_ja": "3-5 line summary in Japanese (~80-120 words)",
+    "key_data": ["specific numbers, percentages, or forecasts mentioned"],
+    "trend_keywords_ja": ["3-5 relevant keywords in Japanese"]
+  }}
+]
+```
+
+# Articles
+{articles}

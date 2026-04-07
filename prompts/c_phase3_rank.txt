@@ -1,0 +1,51 @@
+You are a quality evaluator for Unexpected Scenario reports. Score each candidate scenario on 3 dimensions.
+
+# Topic: {topic}
+
+# Scoring Dimensions (1-10 each)
+
+1. **unexpectedness**: How far is this outside normal forecasts, mainstream discussions, and everyday imagination? Would a well-informed professional be genuinely surprised?
+   - 8-10 = Completely absent from any mainstream narrative; hard to envision even with effort
+   - 4-7 = Unusual but has appeared in fringe or speculative discussions
+   - 1-3 = Already in mainstream consciousness or commonly forecasted
+
+2. **social_impact**: How broadly does this change how most people live, or how society functions as a whole?
+   - 8-10 = Transforms daily life for the majority of the population
+   - 4-7 = Significantly affects specific large segments of society
+   - 1-3 = Limited to a narrow group or locale
+
+3. **uncertainty**: How impossible is it for even an expert to anticipate, evaluate, or verify whether this will occur?
+   - 8-10 = Inherently unknowable — experts cannot determine likelihood
+   - 4-7 = Experts disagree significantly
+   - 1-3 = Fairly predictable in direction or timing
+
+# IMPORTANT SCORING RULES
+- total_score MUST equal unexpectedness + social_impact + uncertainty (max 30).
+
+# Quality Note — 日本語の明瞭さ（参考情報、スコアには影響しない）
+After scoring, note any Japanese writing issues in ranking_note_ja for downstream review. Do NOT deduct points for writing quality — score purely on the 3 dimensions above.
+Issues to flag: abstract jargon titles, sentences over 60 chars, kanji chains without particles, vague intensifiers instead of numbers, unclear core mechanism.
+
+# LANGUAGE RULE
+- ranking_note_ja MUST be 100% Japanese. Do NOT include any English words or phrases.
+
+# Output — respond ONLY with a JSON object containing a "rankings" array, no other text
+```json
+{{
+  "rankings": [
+    {{
+      "scenario_id": "C-1",
+      "scores": {{
+        "unexpectedness": 7,
+        "social_impact": 9,
+        "uncertainty": 8
+      }},
+      "total_score": 24,
+      "ranking_note_ja": "スコアの根拠（1文）"
+    }}
+  ]
+}}
+```
+
+# Scenario Summaries to Evaluate
+{scenarios}
