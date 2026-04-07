@@ -114,7 +114,7 @@ def rerank_a(limit: int | None = None, translate: bool = True):
     llm = get_openai_client()
     llm.set_step("A1-rerank")
 
-    A1_DIMS = ["structural_depth", "irreversibility", "industry_relevance", "topic_relevance"]
+    A1_DIMS = ["structural_depth", "irreversibility", "industry_relevance", "topic_relevance", "feasibility"]
 
     scenarios, final = rank_and_select(
         scenarios, A1_DIMS,
@@ -162,6 +162,7 @@ def rerank_a(limit: int | None = None, translate: bool = True):
             "score_irreversibility": s.get("score_irreversibility", 0),
             "score_industry_relevance": s.get("score_industry_relevance", 0),
             "score_topic_relevance": s.get("score_topic_relevance", 0),
+            "score_feasibility": s.get("score_feasibility", 0),
             "title_ja": s.get("title_ja", ""),
             "title_zh": s.get("title_zh", ""),
             "change_from_ja": s.get("change_from_ja", ""),
@@ -348,6 +349,21 @@ def rerank_d(limit: int | None = None, translate: bool = True):
         for s in final
     ])
     save_excel(df, OUTPUT_DIR / "D_opportunity_scenarios.xlsx")
+
+    # Matrix classification
+    if getattr(cfg, "D_MATRIX_MODE", False):
+        for s in final:
+            u = s.get("unexpected_score", 0)
+            i = s.get("impact_score", 0)
+            if u >= 6 and i >= 6:
+                s["matrix_quadrant"] = "breakthrough"
+            elif u >= 6 and i < 6:
+                s["matrix_quadrant"] = "surprising"
+            elif u < 6 and i >= 6:
+                s["matrix_quadrant"] = "incremental"
+            else:
+                s["matrix_quadrant"] = "low_priority"
+        _save_json_outputs(final, "D_opportunity_scenarios", translate=translate)
 
     logger.info(f"\nD rerank done: {len(final)} scenarios written (from {len(scenarios)} scored scenarios)")
     return final

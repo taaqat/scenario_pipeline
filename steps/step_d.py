@@ -194,6 +194,38 @@ def phase1_select_pairs(
 
 
 # ── Matrix mode: generate all A×C pairs ──────────────
+def phase1_random_pairs(
+    expected: list[dict] = None,
+    unexpected: list[dict] = None,
+) -> list[dict]:
+    """Random pairing: randomly combine A and C scenarios into D_GENERATE_N pairs."""
+    import random
+
+    if expected is None:
+        expected = read_json(cfg.OUTPUT_DIR / "A1_expected_scenarios_ja.json")
+    if unexpected is None:
+        unexpected = read_json(cfg.OUTPUT_DIR / "C_unexpected_scenarios_ja.json")
+
+    num_pairs = cfg.D_GENERATE_N
+    pairs = []
+    for i in range(num_pairs):
+        # Pick 2-3 random A and 2-3 random C for each pair
+        n_a = random.randint(2, min(3, len(expected)))
+        n_c = random.randint(2, min(3, len(unexpected)))
+        sampled_a = random.sample(expected, n_a)
+        sampled_c = random.sample(unexpected, n_c)
+        pairs.append({
+            "pair_id": i + 1,
+            "expected_ids": [a.get("scenario_id") for a in sampled_a],
+            "unexpected_ids": [c.get("scenario_id") for c in sampled_c],
+            "collision_hypothesis_ja": "",
+        })
+
+    logger.info(f"Random mode: {num_pairs} random pairs from {len(expected)}A × {len(unexpected)}C")
+    save_json(pairs, cfg.INTERMEDIATE_DIR / "d_phase1_pairs.json")
+    return pairs
+
+
 def matrix_all_pairs(
     expected: list[dict] = None,
     unexpected: list[dict] = None,
@@ -634,6 +666,27 @@ def phase3_rank(scenarios: list[dict] = None) -> list[dict]:
     ])
     save_excel(df, cfg.OUTPUT_DIR / "D_opportunity_scenarios.xlsx")
 
+    # Matrix classification: Unexpectedness × Impact
+    if getattr(cfg, "D_MATRIX_MODE", False):
+        for s in final:
+            u = s.get("unexpected_score", 0)
+            i = s.get("impact_score", 0)
+            if u >= 6 and i >= 6:
+                s["matrix_quadrant"] = "breakthrough"
+            elif u >= 6 and i < 6:
+                s["matrix_quadrant"] = "surprising"
+            elif u < 6 and i >= 6:
+                s["matrix_quadrant"] = "incremental"
+            else:
+                s["matrix_quadrant"] = "low_priority"
+        # Re-save with matrix labels
+        save_split(final, cfg.OUTPUT_DIR, "D_opportunity_scenarios")
+        logger.info(f"Matrix classification applied: "
+                    f"{sum(1 for s in final if s.get('matrix_quadrant')=='breakthrough')} breakthrough, "
+                    f"{sum(1 for s in final if s.get('matrix_quadrant')=='surprising')} surprising, "
+                    f"{sum(1 for s in final if s.get('matrix_quadrant')=='incremental')} incremental, "
+                    f"{sum(1 for s in final if s.get('matrix_quadrant')=='low_priority')} low_priority")
+
     logger.info(f"Phase 3 done: {len(final)} scenarios written to output after gate filter and review")
     return final
 
@@ -665,7 +718,9 @@ def run() -> list[dict]:
         pairs = None
 
     if pairs is None:
-        if cfg.D_MODE == "matrix":
+        if cfg.D_MODE == "random":
+            pairs = phase1_random_pairs(expected, unexpected)
+        elif cfg.D_MODE == "matrix":
             pairs = matrix_all_pairs(expected, unexpected)
         else:
             pairs = phase1_select_pairs(expected, unexpected)

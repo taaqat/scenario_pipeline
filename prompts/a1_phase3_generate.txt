@@ -108,6 +108,15 @@ ALL text fields in Japanese (_ja) only.
 - The title must name something a person can point to in real life — a place, a role, a thing, an activity.
 - It does NOT name a system, framework, platform, or abstract concept.
 
+### Title Examples (GOOD vs BAD)
+| GOOD ✓ | BAD ✗ | Why bad |
+|---------|-------|---------|
+| 夜勤のいない介護施設 | 介護施設の夜間オペレーション改革 | Abstract; cannot picture it |
+| 80歳が面接に受かる社会 | 高齢者雇用促進プラットフォーム | Platform name, not a scene |
+| 大人用おむつの売り場 | 排泄ケア市場の構造転換 | Jargon; nobody talks like this |
+| 団地が大学になる日 | 既存集合住宅の教育機能統合 | Too abstract; reads like a policy doc |
+| 認知症でも一人で買い物できる街 | 認知症対応型スマートシティ構想 | Buzzword salad |
+
 # Theme Analysis Data
 Each theme object includes a `sample_source_articles` list — these are actual rows from the source dataset, provided so you can cite real row numbers in supporting_evidences.
 {themes}

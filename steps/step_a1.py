@@ -467,7 +467,7 @@ def phase4_rank(scenarios: list[dict] = None) -> list[dict]:
     llm = get_openai_client()
     llm.set_step("A1-rank")
 
-    A1_DIMS = ["structural_depth", "irreversibility", "industry_relevance", "topic_relevance"]
+    A1_DIMS = ["structural_depth", "irreversibility", "industry_relevance", "topic_relevance", "feasibility"]
 
     a1_summary_fn = lambda s: {
         "scenario_id": s.get("scenario_id"),
@@ -517,6 +517,7 @@ def phase4_rank(scenarios: list[dict] = None) -> list[dict]:
             "score_irreversibility": s.get("score_irreversibility", 0),
             "score_industry_relevance": s.get("score_industry_relevance", 0),
             "score_topic_relevance": s.get("score_topic_relevance", 0),
+            "score_feasibility": s.get("score_feasibility", 0),
             "title_ja": s.get("title_ja", ""),
             "title_zh": s.get("title_zh", ""),
             "change_from_ja": s.get("change_from_ja", ""),

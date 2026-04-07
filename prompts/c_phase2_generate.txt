@@ -108,6 +108,15 @@ ALL text fields in Japanese (_ja) only.
 - Test: could an illustrator draw this title as a single image? If not, it is too abstract — rewrite.
 - The title names WHO does WHAT in a specific situation. It does not name an era, a system, or an abstract concept.
 
+### Title Examples (GOOD vs BAD)
+| GOOD ✓ | BAD ✗ | Why bad |
+|---------|-------|---------|
+| 90歳が20代の姿で面接に受かる | デジタルアバターによる年齢バイアス解消 | Cannot draw "bias elimination" |
+| 認知症の祖母が匂いで街を歩く | 嗅覚テクノロジーによる認知症ケア革新 | Reads like a grant proposal |
+| 美容院が認知症の最前線になる | 理美容業界の認知症早期発見機能の拡大 | Too wordy, too abstract |
+| 死んだ人が株主総会で投票する | 故人のデジタルペルソナの法的権利 | Not a scene; a legal concept |
+| 高齢者が「本人」を証明できなくなる | 高齢社会における本人認証課題 | Boring; no surprise element |
+
 ## Surprise Comes From the Mechanism
 - The source of surprise must be a specific MECHANISM — not a generic outcome. "Elderly gain power" is a generic outcome. Your scenario must center on ONE specific mechanism (a biological discovery? a legal loophole? a technology failure? a cultural reversal?) that makes the reader say "I never thought THAT could happen."
 - Name the mechanism explicitly in the title and overview.

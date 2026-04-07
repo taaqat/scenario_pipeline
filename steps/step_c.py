@@ -23,7 +23,47 @@ from utils.bilingual import save_split, translate_to_zh, strip_zh
 logger = logging.getLogger(__name__)
 
 
-# ── Phase 1: Cluster signals ───────────────────────
+# ── Phase 1 (random mode): Random grouping ─────────
+def phase1_random(selected_signals: list[dict] = None) -> list[dict]:
+    """
+    Random grouping mode: shuffle signals and split into N groups.
+    Skips embedding + k-means. Each group gets a generic label.
+    Designed for creative leaps — forces cross-domain combinations.
+    """
+    import random
+
+    if selected_signals is None:
+        selected_signals = read_json(cfg.INTERMEDIATE_DIR / "b_phase3_dedup_selected.json")
+
+    n_groups = cfg.C_GENERATE_N
+    logger.info(f"Phase 1 (RANDOM): shuffling {len(selected_signals)} signals into {n_groups} random groups")
+
+    shuffled = list(selected_signals)
+    random.shuffle(shuffled)
+
+    # Split into N roughly equal groups
+    all_clusters = []
+    group_size = max(1, len(shuffled) // n_groups)
+    for i in range(n_groups):
+        start = i * group_size
+        end = start + group_size if i < n_groups - 1 else len(shuffled)
+        group = shuffled[start:end]
+        if not group:
+            continue
+        cluster = {
+            "cluster_id": f"RND-{i+1:03d}",
+            "theme_ja": "ランダム配合グループ",
+            "synthesis_hint_ja": "異なる領域の訊号を無作為に組み合わせ、予想外の接点を探る",
+            "signal_ids": [str(s.get("signal_id", "")) for s in group],
+        }
+        all_clusters.append(cluster)
+
+    save_json(all_clusters, cfg.INTERMEDIATE_DIR / "c_phase1_clusters.json")
+    logger.info(f"Phase 1 (RANDOM) done: {len(all_clusters)} random groups")
+    return all_clusters
+
+
+# ── Phase 1 (cluster mode): K-means clustering ────
 def phase1_cluster(selected_signals: list[dict] = None) -> list[dict]:
     """
     Cluster selected weak signals into thematic groups.
@@ -326,10 +366,13 @@ def phase3_rank(scenarios: list[dict] = None) -> list[dict]:
 # ── Run All ─────────────────────────────────────────
 def run() -> list[dict]:
     logger.info("=" * 60)
-    logger.info("Step C: Unexpected Scenario Generation")
+    logger.info(f"Step C: Unexpected Scenario Generation (mode={cfg.C_MODE})")
     logger.info("=" * 60)
 
-    clusters = phase1_cluster()
+    if cfg.C_MODE == "random":
+        clusters = phase1_random()
+    else:
+        clusters = phase1_cluster()
     scenarios = phase2_generate(clusters)
     final = phase3_rank(scenarios)
 
