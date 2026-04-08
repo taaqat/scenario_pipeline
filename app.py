@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 # ─── State ──────────────────────────────────────────
-state = {"running": False, "step": "", "logs": [], "last_run": None, "last_summary": None}
+state = {"running": False, "step": "", "logs": [], "last_run": None, "last_summary": None,
+         "phase": "", "phase_num": 0, "phase_total": 0}
 
 LABELS = {
     "run_a1": "A1 Full Run", "run_b": "B Full Run", "run_c": "C Full Run", "run_d": "D Full Run",
@@ -28,12 +29,26 @@ LABELS = {
     "d_pair": "D Pair", "d_generate": "D Generate",
     "d_rank": "D Rank", "rerank_c": "C Re-rank", "rerank_d": "D Re-rank",
 }
-EST_FULL = {
-    "run_a1": "~10-15 min · ~$5-7",
-    "run_b": "~3-5 min · ~$1",
-    "run_c": "~10-20 min · ~$7-12",
-    "run_d": "~8-15 min · ~$5-7",
-}
+def est_full(key, params):
+    """Dynamic time/cost estimate based on current settings."""
+    a1_n = params.get("A1_GENERATE_N", 20) or 20
+    c_n = params.get("C_GENERATE_N", 150) or 150
+    d_n = params.get("D_GENERATE_N", 40) or 40
+    if key == "run_a1":
+        mins = max(3, int(a1_n * 0.5))
+        cost = max(1, round(a1_n * 0.25))
+        return f"~{mins} min · ~${cost}"
+    elif key == "run_b":
+        return "~3-5 min · ~$1"
+    elif key == "run_c":
+        mins = max(3, int(c_n * 0.1))
+        cost = max(1, round(c_n * 0.06))
+        return f"~{mins} min · ~${cost}"
+    elif key == "run_d":
+        mins = max(3, int(d_n * 0.3))
+        cost = max(1, round(d_n * 0.15))
+        return f"~{mins} min · ~${cost}"
+    return EST_TIME.get(key, "")
 
 # Estimated time per action
 EST_TIME = {
@@ -235,39 +250,61 @@ async def run_step(step, overrides, status_el, indicator, log_area, summary_box,
         progress_bar.visible = True
     log_area.clear()
 
-    # Clear summary
+    # Clear summary — show initial running state
+    state["phase"] = "Starting..."
+    state["phase_num"] = 0
+    state["phase_total"] = 0
     summary_box.clear()
     with summary_box:
-        with ui.row().classes("items-center gap-2 py-3"):
-            ui.spinner("dots", size="sm")
-            ui.label(f"Running {label}...").classes("text-sm text-gray-500")
+        with ui.card().classes("w-full bg-amber-50 border border-amber-200 p-4").style("border-radius: 10px"):
+            with ui.row().classes("items-center gap-3"):
+                ui.spinner("dots", size="sm", color="amber")
+                ui.label(f"Running {label}...").classes("text-sm font-semibold text-amber-800")
+            progress_label = ui.label("Starting...").classes("text-xs text-amber-600 mt-1")
+            progress_bar_run = ui.linear_progress(value=0, show_value=False).classes("w-full mt-2").props("color=amber rounded size=8px")
 
     def _run():
         try:
+            def _progress(phase_name, num, total):
+                state["phase"] = phase_name
+                state["phase_num"] = num
+                state["phase_total"] = total
+
             # ── Full step runs (one-click) ──
             if step == "run_a1":
                 from steps.step_a1 import phase2_cluster, phase3_generate, phase4_rank
+                _progress("Clustering articles...", 1, 3)
                 themes = phase2_cluster()
+                _progress("Generating scenarios...", 2, 3)
                 scenarios = phase3_generate(themes)
+                _progress("Scoring & filtering...", 3, 3)
                 phase4_rank(scenarios)
             elif step == "run_b":
                 from steps.step_b import select_top_signals, diversity_dedup
+                _progress("Selecting top signals...", 1, 2)
                 candidates = select_top_signals()
+                _progress("Removing duplicates...", 2, 2)
                 diversity_dedup(candidates)
             elif step == "run_c":
                 from steps.step_c import phase1_cluster, phase1_random, phase2_generate, phase3_rank
+                mode_label = "Random grouping..." if cfg.C_MODE == "random" else "Clustering signals..."
+                _progress(mode_label, 1, 3)
                 clusters = (phase1_random if cfg.C_MODE == "random" else phase1_cluster)()
+                _progress("Generating scenarios...", 2, 3)
                 scenarios = phase2_generate(clusters)
+                _progress("Scoring & filtering...", 3, 3)
                 phase3_rank(scenarios)
             elif step == "run_d":
                 from steps.step_d import phase1_select_pairs, phase1_random_pairs, phase2_generate, phase3_rank
-                expected_path = cfg.OUTPUT_DIR / "A1_expected_scenarios_ja.json"
-                unexpected_path = cfg.OUTPUT_DIR / "C_unexpected_scenarios_ja.json"
                 from utils.data_io import read_json
-                exp = read_json(expected_path)
-                unexp = read_json(unexpected_path)
+                exp = read_json(cfg.OUTPUT_DIR / "A1_expected_scenarios_ja.json")
+                unexp = read_json(cfg.OUTPUT_DIR / "C_unexpected_scenarios_ja.json")
+                mode_label = "Random pairing..." if cfg.D_MODE == "random" else "Selecting best pairs..."
+                _progress(mode_label, 1, 3)
                 pairs = (phase1_random_pairs if cfg.D_MODE == "random" else phase1_select_pairs)(exp, unexp)
+                _progress("Generating opportunities...", 2, 3)
                 scenarios = phase2_generate(pairs, exp, unexp)
+                _progress("Scoring & classifying...", 3, 3)
                 phase3_rank(scenarios)
             # ── Individual sub-steps (advanced) ──
             elif step == "a1_cluster_generate":
@@ -506,7 +543,7 @@ def main_page():
         # ══════════════════════════════════
         def make_step_tab(panel, code, full_run_key, locked_note, section, adv_actions, extra_content=None):
             info = STEPS_INFO[code]
-            full_est = EST_FULL.get(full_run_key, "")
+            full_est_key = full_run_key  # store key, compute dynamically
             with ui.tab_panel(panel):
                 with ui.column().classes("w-full max-w-4xl mx-auto py-6 gap-5"):
 
@@ -554,7 +591,7 @@ def main_page():
                                 ui.label(f"This will run the entire {info['title']} pipeline.").classes("text-sm text-gray-600")
                                 with ui.row().classes("items-center gap-2 mt-2"):
                                     ui.icon("schedule", size="xs").classes("text-gray-400")
-                                    ui.label(f"Estimated: {full_est}").classes("text-sm text-gray-400")
+                                    ui.label(f"Estimated: {est_full(full_est_key, params)}").classes("text-sm text-gray-400")
                                 ui.label("API cost is incurred each time you run.").classes("text-xs text-gray-400 mt-1")
                                 if replaces:
                                     ui.separator().classes("my-2")
@@ -574,7 +611,7 @@ def main_page():
                             dlg.open()
 
                         main_btn = ui.button(f"Run Step {code}", icon="play_arrow", on_click=_main_click).props("color=indigo size=md")
-                        ui.label(full_est).classes("text-xs text-gray-400 mt-1")
+                        est_label = ui.label(est_full(full_est_key, params)).classes("text-xs text-gray-400 mt-1")
                         action_buttons.append((main_btn, full_run_key))
 
                         # Advanced: individual sub-steps
@@ -634,6 +671,14 @@ def main_page():
                             for line in state["logs"]:
                                 area.push(line)
                             state["logs"] = []
+                            # Update progress while running
+                            if state["running"] and state.get("phase"):
+                                try:
+                                    progress_label.text = f"Phase {state['phase_num']}/{state['phase_total']}: {state['phase']}"
+                                    if state["phase_total"] > 0:
+                                        progress_bar_run.value = state["phase_num"] / state["phase_total"]
+                                except Exception:
+                                    pass
                             if not state["running"] and state.get("last_run"):
                                 status_el.text = f"Done ({state['last_run']})"
                                 status_el.classes(replace="text-green-600 font-semibold text-sm")
