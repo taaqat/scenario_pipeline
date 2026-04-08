@@ -55,6 +55,29 @@ ACTION_DEPS = {
     "rerank_d": ("d_phase2_scenarios.json", "Run D Generate first"),
 }
 
+# What each action replaces + downstream impact
+ACTION_IMPACT = {
+    "a1_cluster_generate": ("Replaces: A1 theme clusters + generated scenarios.",
+                            "You will need to re-run A1 Re-rank and Step D afterward."),
+    "rerank_a": ("Replaces: A1 final scored/filtered results.", ""),
+    "b_select": ("Replaces: B signal selection.", "You may want to re-run B Dedup afterward."),
+    "b_dedup": ("Replaces: B deduplicated signals.",
+                "Step C uses these signals — re-run C if you want updated results."),
+    "c_cluster": ("Replaces: C signal groupings.",
+                  "You will need to re-run C Generate and C Rank afterward."),
+    "c_generate": ("Replaces: C generated scenarios.",
+                   "You will need to re-run C Rank afterward. Step D uses C results."),
+    "c_rank": ("Replaces: C final scored/filtered results.",
+               "Step D uses these results — re-run D if you want updated opportunities."),
+    "d_pair": ("Replaces: D pair selection.",
+               "You will need to re-run D Generate and D Rank afterward."),
+    "d_generate": ("Replaces: D generated opportunity scenarios.",
+                   "You will need to re-run D Rank afterward."),
+    "d_rank": ("Replaces: D final scored/filtered/classified results.", ""),
+    "rerank_c": ("Replaces: C final scored/filtered results.", ""),
+    "rerank_d": ("Replaces: D final scored/filtered results.", ""),
+}
+
 STEPS_INFO = {
     "A1": {"icon": "article", "color": "blue", "title": "Expected Scenarios",
            "desc": "Identify structural changes from news articles.",
@@ -396,6 +419,13 @@ def main_page():
                             with ui.row().classes("items-center gap-2 py-1"):
                                 ui.icon("description", size="xs").classes("text-teal-400")
                                 ui.label(f.name).classes("text-xs text-gray-600 font-mono")
+                        with ui.row().classes("mt-2 bg-blue-50 rounded-lg px-3 py-2 items-start gap-2"):
+                            ui.icon("info", size="xs").classes("text-blue-500 mt-0.5")
+                            ui.label(
+                                "Changing the Research Topic adjusts how AI scores and generates scenarios, "
+                                "but the underlying data stays the same. "
+                                "To analyze a completely different topic, new datasets need to be uploaded."
+                            ).classes("text-xs text-blue-700")
 
                     with ui.card().classes("flex-1 card-s p-5"):
                         with ui.row().classes("items-center gap-2 mb-3"):
@@ -490,11 +520,22 @@ def main_page():
                                 with ui.column().classes("gap-1"):
                                     async def _click(k=key, sb=summary_box):
                                         if k not in ("b_select",):
-                                            with ui.dialog() as dlg, ui.card().classes("p-5"):
+                                            replaces, downstream = ACTION_IMPACT.get(k, ("", ""))
+                                            with ui.dialog() as dlg, ui.card().classes("p-5 max-w-md"):
                                                 ui.label("Confirm Run").classes("text-lg font-bold mb-2")
                                                 ui.label(f"This will run: {LABELS.get(k, k)}").classes("text-sm text-gray-600")
-                                                ui.label(f"Estimated: {EST_TIME.get(k, 'unknown')}").classes("text-sm text-gray-400")
-                                                ui.label("Existing results for this step will be replaced.").classes("text-xs text-orange-500 mt-2")
+                                                with ui.row().classes("items-center gap-2 mt-2"):
+                                                    ui.icon("schedule", size="xs").classes("text-gray-400")
+                                                    ui.label(f"Estimated: {EST_TIME.get(k, 'unknown')}").classes("text-sm text-gray-400")
+                                                ui.label("API cost is incurred each time you run.").classes("text-xs text-gray-400 mt-1")
+                                                if replaces:
+                                                    ui.separator().classes("my-2")
+                                                    with ui.row().classes("items-start gap-2"):
+                                                        ui.icon("warning", size="xs").classes("text-orange-500 mt-0.5")
+                                                        with ui.column().classes("gap-0"):
+                                                            ui.label(replaces).classes("text-xs text-orange-600")
+                                                            if downstream:
+                                                                ui.label(downstream).classes("text-xs text-orange-400 mt-1")
                                                 with ui.row().classes("mt-4 gap-2 justify-end"):
                                                     ui.button("Cancel", on_click=dlg.close).props("flat")
                                                     ui.button("Run", icon="play_arrow",

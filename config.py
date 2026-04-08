@@ -155,9 +155,9 @@ CLIENT_PROFILE = {
 
 UI_PARAMS = {
     # ── Global ──
-    "TOPIC":        {"section": "Global", "label": "Research Topic", "hint": "The main theme AI will focus on.", "type": "text", "default": TOPIC, "priority": "main"},
-    "TIMEFRAME":    {"section": "Global", "label": "Time Horizon", "hint": "How far into the future to look.", "type": "text", "default": TIMEFRAME, "priority": "main"},
-    "INDUSTRIES":   {"section": "Global", "label": "Target Industries", "hint": "Comma-separated. AI will focus scenarios on these industries.", "type": "text", "default": ", ".join(CLIENT_PROFILE["industries"]), "priority": "main"},
+    "TOPIC":        {"section": "Global", "label": "Research Topic", "hint": "The main theme AI will focus on. Changing this affects scoring in all steps — re-run needed.", "type": "text", "default": TOPIC, "priority": "main"},
+    "TIMEFRAME":    {"section": "Global", "label": "Time Horizon", "hint": "How far into the future to look. Changing this affects scenario generation — re-run needed.", "type": "text", "default": TIMEFRAME, "priority": "main"},
+    "INDUSTRIES":   {"section": "Global", "label": "Target Industries", "hint": "Comma-separated. AI will tailor scenarios to these industries. Changing this affects all steps — re-run needed.", "type": "text", "default": ", ".join(CLIENT_PROFILE["industries"]), "priority": "main"},
 
     # ── A1 ──
     "A1_GENERATE_N":                {"section": "A1 Expected", "label": "Number of scenarios to generate", "hint": "More = broader coverage but slower. Recommended: 20.", "type": "number", "min": 5, "max": 100, "default": 20, "priority": "main"},
