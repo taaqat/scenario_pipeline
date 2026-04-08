@@ -20,12 +20,19 @@ logging.basicConfig(level=logging.INFO)
 state = {"running": False, "step": "", "logs": [], "last_run": None, "last_summary": None}
 
 LABELS = {
+    "run_a1": "A1 Full Run", "run_b": "B Full Run", "run_c": "C Full Run", "run_d": "D Full Run",
     "a1_cluster_generate": "A1 Cluster + Generate",
     "rerank_a": "A1 Re-rank", "b_select": "B Select",
     "b_dedup": "B Dedup", "c_cluster": "C Group",
     "c_generate": "C Generate", "c_rank": "C Rank",
     "d_pair": "D Pair", "d_generate": "D Generate",
     "d_rank": "D Rank", "rerank_c": "C Re-rank", "rerank_d": "D Re-rank",
+}
+EST_FULL = {
+    "run_a1": "~10-15 min · ~$5-7",
+    "run_b": "~3-5 min · ~$1",
+    "run_c": "~10-20 min · ~$7-12",
+    "run_d": "~8-15 min · ~$5-7",
 }
 
 # Estimated time per action
@@ -57,6 +64,10 @@ ACTION_DEPS = {
 
 # What each action replaces + downstream impact
 ACTION_IMPACT = {
+    "run_a1": ("Replaces all A1 results.", "Re-run D afterward for updated opportunities."),
+    "run_b": ("Replaces signal selection.", "Re-run C and D afterward."),
+    "run_c": ("Replaces all C results.", "Re-run D afterward for updated opportunities."),
+    "run_d": ("Replaces all D results.", ""),
     "a1_cluster_generate": ("Replaces: A1 theme clusters + generated scenarios.",
                             "You will need to re-run A1 Re-rank and Step D afterward."),
     "rerank_a": ("Replaces: A1 final scored/filtered results.", ""),
@@ -140,6 +151,21 @@ def build_summary(step_key):
     """Build a result summary after a run, including preview titles."""
     try:
         from utils.data_io import read_json
+        # Full runs check output files
+        output_map_full = {
+            "run_a1": ("A1_expected_scenarios_ja.json", "scenarios delivered", "title_ja"),
+            "run_b": ("B_selected_weak_signals_ja.json", "signals selected", "title_ja"),
+            "run_c": ("C_unexpected_scenarios_ja.json", "scenarios delivered", "title_ja"),
+            "run_d": ("D_opportunity_scenarios_ja.json", "opportunities delivered", "opportunity_title_ja"),
+        }
+        if step_key in output_map_full:
+            fn, lbl, tk = output_map_full[step_key]
+            p = cfg.OUTPUT_DIR / fn
+            if p.exists():
+                d = read_json(p)
+                pv = [it.get(tk, "")[:40] for it in d[:3] if it.get(tk)]
+                return {"count": len(d), "label": lbl, "previews": pv, "type": "Newly generated"}
+
         summary_map = {
             "a1_cluster_generate": ("a1_phase3_scenarios.json", "scenarios generated", "title_ja"),
             "b_select": ("b_phase2_top3000_candidates.json", "signals selected", "title_ja"),
@@ -159,7 +185,7 @@ def build_summary(step_key):
                     t = item.get(title_key, item.get("title", ""))
                     if t:
                         previews.append(t[:40])
-            return {"count": len(data), "label": label, "previews": previews}
+            return {"count": len(data), "label": label, "previews": previews, "type": "Partial run"}
 
         # For rank/rerank steps, check output files
         output_map = {
@@ -175,7 +201,7 @@ def build_summary(step_key):
             if opath.exists():
                 data = read_json(opath)
                 previews = [item.get(title_key, "")[:40] for item in data[:3] if item.get(title_key)]
-                return {"count": len(data), "label": "scenarios passed all filters", "previews": previews}
+                return {"count": len(data), "label": "passed all filters", "previews": previews, "type": "Re-filtered"}
         return None
     except Exception:
         return None
@@ -218,7 +244,33 @@ async def run_step(step, overrides, status_el, indicator, log_area, summary_box,
 
     def _run():
         try:
-            if step == "a1_cluster_generate":
+            # ── Full step runs (one-click) ──
+            if step == "run_a1":
+                from steps.step_a1 import phase2_cluster, phase3_generate, phase4_rank
+                themes = phase2_cluster()
+                scenarios = phase3_generate(themes)
+                phase4_rank(scenarios)
+            elif step == "run_b":
+                from steps.step_b import select_top_signals, diversity_dedup
+                candidates = select_top_signals()
+                diversity_dedup(candidates)
+            elif step == "run_c":
+                from steps.step_c import phase1_cluster, phase1_random, phase2_generate, phase3_rank
+                clusters = (phase1_random if cfg.C_MODE == "random" else phase1_cluster)()
+                scenarios = phase2_generate(clusters)
+                phase3_rank(scenarios)
+            elif step == "run_d":
+                from steps.step_d import phase1_select_pairs, phase1_random_pairs, phase2_generate, phase3_rank
+                expected_path = cfg.OUTPUT_DIR / "A1_expected_scenarios_ja.json"
+                unexpected_path = cfg.OUTPUT_DIR / "C_unexpected_scenarios_ja.json"
+                from utils.data_io import read_json
+                exp = read_json(expected_path)
+                unexp = read_json(unexpected_path)
+                pairs = (phase1_random_pairs if cfg.D_MODE == "random" else phase1_select_pairs)(exp, unexp)
+                scenarios = phase2_generate(pairs, exp, unexp)
+                phase3_rank(scenarios)
+            # ── Individual sub-steps (advanced) ──
+            elif step == "a1_cluster_generate":
                 from steps.step_a1 import phase2_cluster, phase3_generate
                 phase3_generate(phase2_cluster())
             elif step == "rerank_a":
@@ -305,6 +357,11 @@ def render_settings(section, params, show_advanced=True):
         with ui.expansion("Advanced Filters", icon="tune").classes("w-full text-sm").props("dense"):
             for key, spec in adv_items:
                 _item(key, spec)
+            def _reset():
+                for key, spec in adv_items:
+                    params[key] = spec["default"]
+                ui.notify("Filters reset to defaults", type="info")
+            ui.button("Reset to defaults", icon="restart_alt", on_click=_reset).props("flat size=sm color=grey").classes("mt-2")
 
 
 # ─── Page ───────────────────────────────────────────
@@ -447,8 +504,9 @@ def main_page():
         # ══════════════════════════════════
         #  STEP TAB BUILDER
         # ══════════════════════════════════
-        def make_step_tab(panel, code, phases, locked_note, section, actions, extra_content=None):
+        def make_step_tab(panel, code, full_run_key, locked_note, section, adv_actions, extra_content=None):
             info = STEPS_INFO[code]
+            full_est = EST_FULL.get(full_run_key, "")
             with ui.tab_panel(panel):
                 with ui.column().classes("w-full max-w-4xl mx-auto py-6 gap-5"):
 
@@ -471,81 +529,98 @@ def main_page():
                     if extra_content:
                         extra_content()
 
-                    # Two columns
-                    with ui.row().classes("w-full gap-5 items-start"):
-                        with ui.card().classes("flex-1 card-s p-5"):
-                            ui.label("What happens").classes("text-xs font-bold text-gray-400 uppercase tracking-widest mb-3")
-                            for i, (text, locked) in enumerate(phases):
-                                with ui.row().classes("items-center gap-3 py-1"):
-                                    if locked:
-                                        ui.icon("lock", size="xs").classes("text-gray-300")
-                                    else:
-                                        ui.icon("radio_button_unchecked", size="xs").classes(f"text-{info['color']}-400")
-                                    ui.label(text).classes(f"text-sm {'text-gray-300' if locked else 'text-gray-700'}")
-                            if locked_note:
-                                with ui.row().classes("mt-3 bg-amber-50 rounded-lg px-3 py-2 items-center gap-2"):
-                                    ui.icon("info", size="xs").classes("text-amber-500")
-                                    ui.label(locked_note).classes("text-xs text-amber-700")
-
-                        with ui.card().classes("flex-1 card-s p-5"):
-                            ui.label("Settings").classes("text-xs font-bold text-gray-400 uppercase tracking-widest mb-3")
-                            render_settings(section, params)
-
-                    # Run + Summary
+                    # Settings
                     with ui.card().classes("w-full card-s p-5"):
-                        ui.label("Run").classes("text-xs font-bold text-gray-400 uppercase tracking-widest mb-3")
+                        if locked_note:
+                            with ui.row().classes("mb-3 bg-amber-50 rounded-lg px-3 py-2 items-center gap-2"):
+                                ui.icon("info", size="xs").classes("text-amber-500")
+                                ui.label(locked_note).classes("text-xs text-amber-700")
+                        ui.label("Settings").classes("text-xs font-bold text-gray-400 uppercase tracking-widest mb-3")
+                        render_settings(section, params)
 
-                        # Summary box (shows result after run)
+                    # Run — one main button + summary
+                    with ui.card().classes("w-full card-s p-5"):
                         summary_box = ui.column().classes("w-full mb-3")
                         if not summary_ref[0]:
                             summary_ref[0] = summary_box
 
-                        action_buttons = []  # (btn, step_key, dep_msg) for reactive updates
-                        with ui.row().classes("gap-3 flex-wrap items-center"):
-                            for i, (lbl, icn, key, is_outline, est) in enumerate(actions):
-                                can, dep_msg = check_dep(key)
-                                props = "color=indigo size=sm"
-                                if is_outline:
-                                    props += " outline"
-                                if not can:
-                                    props += " disable"
+                        action_buttons = []
 
-                                with ui.column().classes("gap-1"):
-                                    async def _click(k=key, sb=summary_box):
-                                        if k not in ("b_select",):
-                                            replaces, downstream = ACTION_IMPACT.get(k, ("", ""))
-                                            with ui.dialog() as dlg, ui.card().classes("p-5 max-w-md"):
-                                                ui.label("Confirm Run").classes("text-lg font-bold mb-2")
-                                                ui.label(f"This will run: {LABELS.get(k, k)}").classes("text-sm text-gray-600")
-                                                with ui.row().classes("items-center gap-2 mt-2"):
-                                                    ui.icon("schedule", size="xs").classes("text-gray-400")
-                                                    ui.label(f"Estimated: {EST_TIME.get(k, 'unknown')}").classes("text-sm text-gray-400")
-                                                ui.label("API cost is incurred each time you run.").classes("text-xs text-gray-400 mt-1")
-                                                if replaces:
-                                                    ui.separator().classes("my-2")
-                                                    with ui.row().classes("items-start gap-2"):
-                                                        ui.icon("warning", size="xs").classes("text-orange-500 mt-0.5")
-                                                        with ui.column().classes("gap-0"):
-                                                            ui.label(replaces).classes("text-xs text-orange-600")
-                                                            if downstream:
-                                                                ui.label(downstream).classes("text-xs text-orange-400 mt-1")
-                                                with ui.row().classes("mt-4 gap-2 justify-end"):
-                                                    ui.button("Cancel", on_click=dlg.close).props("flat")
-                                                    ui.button("Run", icon="play_arrow",
-                                                        on_click=lambda d=dlg: (d.close(), None) or asyncio.ensure_future(
-                                                            run_step(k, params, status_el, indicator, log_ref[0] or ui.log(), sb, progress_bar)
-                                                        )
-                                                    ).props("color=indigo")
-                                            dlg.open()
-                                        else:
-                                            await run_step(k, params, status_el, indicator, log_ref[0] or ui.log(), sb, progress_bar)
+                        # Main run button
+                        async def _main_click(k=full_run_key, sb=summary_box):
+                            replaces, downstream = ACTION_IMPACT.get(k, ("", ""))
+                            with ui.dialog() as dlg, ui.card().classes("p-5 max-w-md"):
+                                ui.label(f"Run Step {code}").classes("text-lg font-bold mb-2")
+                                ui.label(f"This will run the entire {info['title']} pipeline.").classes("text-sm text-gray-600")
+                                with ui.row().classes("items-center gap-2 mt-2"):
+                                    ui.icon("schedule", size="xs").classes("text-gray-400")
+                                    ui.label(f"Estimated: {full_est}").classes("text-sm text-gray-400")
+                                ui.label("API cost is incurred each time you run.").classes("text-xs text-gray-400 mt-1")
+                                if replaces:
+                                    ui.separator().classes("my-2")
+                                    with ui.row().classes("items-start gap-2"):
+                                        ui.icon("warning", size="xs").classes("text-orange-500 mt-0.5")
+                                        with ui.column().classes("gap-0"):
+                                            ui.label(replaces).classes("text-xs text-orange-600")
+                                            if downstream:
+                                                ui.label(downstream).classes("text-xs text-orange-400 mt-1")
+                                with ui.row().classes("mt-4 gap-2 justify-end"):
+                                    ui.button("Cancel", on_click=dlg.close).props("flat")
+                                    ui.button("Run", icon="play_arrow",
+                                        on_click=lambda d=dlg: (d.close(), None) or asyncio.ensure_future(
+                                            run_step(k, params, status_el, indicator, log_ref[0] or ui.log(), sb, progress_bar)
+                                        )
+                                    ).props("color=indigo")
+                            dlg.open()
 
-                                    step_num = f"Step {i+1}: " if len(actions) > 1 else ""
-                                    btn = ui.button(f"{step_num}{lbl}", icon=icn, on_click=_click).props(props)
-                                    if not can:
-                                        btn.tooltip(dep_msg)
-                                    action_buttons.append((btn, key))
-                                    ui.html(f'<span class="est-chip">{est}</span>')
+                        main_btn = ui.button(f"Run Step {code}", icon="play_arrow", on_click=_main_click).props("color=indigo size=md")
+                        ui.label(full_est).classes("text-xs text-gray-400 mt-1")
+                        action_buttons.append((main_btn, full_run_key))
+
+                        # Advanced: individual sub-steps
+                        if adv_actions:
+                            with ui.expansion("Advanced options", icon="tune").classes("w-full mt-3").props("dense"):
+                                ui.label("Run a partial step to preview results before committing to a full run.").classes("text-xs text-gray-400 mb-2")
+                                with ui.row().classes("gap-3 flex-wrap items-start"):
+                                    for lbl, icn, key, est in adv_actions:
+                                        ok, dm = check_dep(key)
+                                        with ui.column().classes("gap-1"):
+                                            async def _adv_click(k=key, sb=summary_box):
+                                                if k not in ("b_select",):
+                                                    rep, down = ACTION_IMPACT.get(k, ("", ""))
+                                                    with ui.dialog() as dlg, ui.card().classes("p-5 max-w-md"):
+                                                        ui.label(LABELS.get(k, k)).classes("text-lg font-bold mb-2")
+                                                        with ui.row().classes("items-center gap-2 mt-1"):
+                                                            ui.icon("schedule", size="xs").classes("text-gray-400")
+                                                            ui.label(f"Estimated: {est}").classes("text-sm text-gray-400")
+                                                        ui.label("API cost is incurred each time.").classes("text-xs text-gray-400 mt-1")
+                                                        if rep:
+                                                            ui.separator().classes("my-2")
+                                                            with ui.row().classes("items-start gap-2"):
+                                                                ui.icon("warning", size="xs").classes("text-orange-500 mt-0.5")
+                                                                with ui.column().classes("gap-0"):
+                                                                    ui.label(rep).classes("text-xs text-orange-600")
+                                                                    if down:
+                                                                        ui.label(down).classes("text-xs text-orange-400 mt-1")
+                                                        with ui.row().classes("mt-4 gap-2 justify-end"):
+                                                            ui.button("Cancel", on_click=dlg.close).props("flat")
+                                                            ui.button("Run", icon="play_arrow",
+                                                                on_click=lambda d=dlg: (d.close(), None) or asyncio.ensure_future(
+                                                                    run_step(k, params, status_el, indicator, log_ref[0] or ui.log(), sb, progress_bar)
+                                                                )
+                                                            ).props("color=indigo")
+                                                    dlg.open()
+                                                else:
+                                                    await run_step(k, params, status_el, indicator, log_ref[0] or ui.log(), sb, progress_bar)
+
+                                            props = "color=indigo size=sm outline"
+                                            if not ok:
+                                                props += " disable"
+                                            b = ui.button(lbl, icon=icn, on_click=_adv_click).props(props)
+                                            if not ok:
+                                                b.tooltip(dm)
+                                            action_buttons.append((b, key))
+                                            ui.label(est).classes("est-chip")
 
                     # Log (collapsed)
                     with ui.expansion("Execution Log", icon="terminal").classes("w-full").props("dense"):
@@ -587,6 +662,9 @@ def main_page():
                                                 with ui.row().classes("items-center gap-3"):
                                                     ui.icon("check_circle", size="sm").classes("text-green-500")
                                                     ui.label(f"{s['count']} {s['label']}").classes("text-sm font-semibold text-green-700")
+                                                    run_type = s.get("type", "")
+                                                    if run_type:
+                                                        ui.badge(run_type, color="grey").classes("text-xs")
                                                 previews = s.get("previews", [])
                                                 if previews:
                                                     ui.label("Preview:").classes("text-xs text-gray-400 mt-1")
@@ -608,22 +686,16 @@ def main_page():
                             ).props("flat color=blue")
 
         # ─── A1 ────────────────────────
-        make_step_tab(t1, "A1",
-            [("Summarize articles", True), ("Cluster into themes", False),
-             ("Generate scenarios", False), ("Score and filter", False)],
-            "Summarization is already done. You can re-run from clustering onward.",
+        make_step_tab(t1, "A1", "run_a1",
+            "Some phases are pre-computed (article summarization). This will re-run clustering, generation, and scoring.",
             "A1 Expected",
-            [("Cluster + Generate", "hub", "a1_cluster_generate", False, EST_TIME["a1_cluster_generate"]),
-             ("Re-rank Only", "sort", "rerank_a", True, EST_TIME["rerank_a"])])
+            [])  # No advanced actions
 
         # ─── B ─────────────────────────
-        make_step_tab(t2, "B",
-            [("Score all signals", True), ("Apply thresholds, select top N", False),
-             ("Remove near-duplicates", False)],
-            "Signal scoring is already done. You can adjust thresholds and re-select.",
+        make_step_tab(t2, "B", "run_b",
+            "Signal scoring is pre-computed. This will re-run selection and deduplication.",
             "B Weak Signal",
-            [("Select Top N", "filter_alt", "b_select", False, EST_TIME["b_select"]),
-             ("Diversity Dedup", "content_cut", "b_dedup", True, EST_TIME["b_dedup"])])
+            [("Preview selection only", "visibility", "b_select", EST_TIME["b_select"])])
 
         # ─── C (with mode comparison) ──
         def c_extra():
@@ -656,25 +728,15 @@ def main_page():
                             ui.icon("remove", size="xs").classes("text-red-400")
                             ui.label("Some combinations may not produce useful scenarios").classes("text-xs text-gray-500")
 
-        make_step_tab(t3, "C",
-            [("Group signals (cluster or random)", False),
-             ("Generate unexpected scenarios", False),
-             ("Score and filter", False)],
+        make_step_tab(t3, "C", "run_c",
             None, "C Unexpected",
-            [("Step 1: Group Signals", "hub", "c_cluster", False, EST_TIME["c_cluster"]),
-             ("Step 2: Generate", "auto_awesome", "c_generate", True, EST_TIME["c_generate"]),
-             ("Step 3: Rank & Filter", "sort", "c_rank", True, EST_TIME["c_rank"])],
+            [("Regroup only", "hub", "c_cluster", EST_TIME["c_cluster"])],
             extra_content=c_extra)
 
         # ─── D ─────────────────────────
-        make_step_tab(t4, "D",
-            [("Select A x C pairs", False),
-             ("Generate opportunity scenarios", False),
-             ("Score, filter, classify into matrix", False)],
+        make_step_tab(t4, "D", "run_d",
             None, "D Opportunity",
-            [("Step 1: Create Pairs", "shuffle", "d_pair", False, EST_TIME["d_pair"]),
-             ("Step 2: Generate", "auto_awesome", "d_generate", True, EST_TIME["d_generate"]),
-             ("Step 3: Rank & Classify", "sort", "d_rank", True, EST_TIME["d_rank"])])
+            [])  # No advanced actions
 
         # ══════════════════════════════════
         #  RESULTS
