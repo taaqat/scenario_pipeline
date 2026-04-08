@@ -250,18 +250,11 @@ async def run_step(step, overrides, status_el, indicator, log_area, summary_box,
         progress_bar.visible = True
     log_area.clear()
 
-    # Clear summary — show initial running state
+    # Clear summary, update state for progress tracking
     state["phase"] = "Starting..."
     state["phase_num"] = 0
     state["phase_total"] = 0
     summary_box.clear()
-    with summary_box:
-        with ui.card().classes("w-full bg-amber-50 border border-amber-200 p-4").style("border-radius: 10px"):
-            with ui.row().classes("items-center gap-3"):
-                ui.spinner("dots", size="sm", color="amber")
-                ui.label(f"Running {label}...").classes("text-sm font-semibold text-amber-800")
-            progress_label = ui.label("Starting...").classes("text-xs text-amber-600 mt-1")
-            progress_bar_run = ui.linear_progress(value=0, show_value=False).classes("w-full mt-2").props("color=amber rounded size=8px")
 
     def _run():
         try:
@@ -577,6 +570,17 @@ def main_page():
 
                     # Run — one main button + summary
                     with ui.card().classes("w-full card-s p-5"):
+                        # Progress card (hidden initially, shown by tick during runs)
+                        progress_card = ui.card().classes("w-full bg-amber-50 border border-amber-200 p-4 mb-3").style("border-radius: 10px")
+                        progress_card.visible = False
+                        with progress_card:
+                            with ui.row().classes("items-center gap-3"):
+                                ui.spinner("dots", size="sm", color="amber")
+                                run_title_label = ui.label("Running...").classes("text-sm font-semibold text-amber-800")
+                            phase_label = ui.label("Starting...").classes("text-xs text-amber-600 mt-1")
+                            phase_progress = ui.linear_progress(value=0, show_value=False).classes("w-full mt-2").props("color=amber rounded size=8px")
+
+                        # Summary box (shown after run completes)
                         summary_box = ui.column().classes("w-full mb-3")
                         if not summary_ref[0]:
                             summary_ref[0] = summary_box
@@ -667,19 +671,27 @@ def main_page():
                         if not log_ref[0]:
                             log_ref[0] = la
 
-                        def tick(area=la, sb=summary_box if summary_ref[0] else None, btns=action_buttons):
+                        def tick(area=la, sb=summary_box if summary_ref[0] else None, btns=action_buttons,
+                                pc=progress_card, pl=phase_label, pp=phase_progress, rt=run_title_label):
                             for line in state["logs"]:
                                 area.push(line)
                             state["logs"] = []
-                            # Update progress while running
-                            if state["running"] and state.get("phase"):
-                                try:
-                                    progress_label.text = f"Phase {state['phase_num']}/{state['phase_total']}: {state['phase']}"
-                                    if state["phase_total"] > 0:
-                                        progress_bar_run.value = state["phase_num"] / state["phase_total"]
-                                except Exception:
-                                    pass
+                            # Show progress while running
+                            if state["running"]:
+                                pc.visible = True
+                                lbl = LABELS.get(state.get("step", ""), "")
+                                rt.text = f"Running {lbl}..."
+                                phase = state.get("phase", "")
+                                pnum = state.get("phase_num", 0)
+                                ptot = state.get("phase_total", 0)
+                                if ptot > 0:
+                                    pl.text = f"Phase {pnum}/{ptot}: {phase}"
+                                    pp.value = pnum / ptot
+                                else:
+                                    pl.text = phase or "Starting..."
+                                    pp.value = 0
                             if not state["running"] and state.get("last_run"):
+                                pc.visible = False
                                 status_el.text = f"Done ({state['last_run']})"
                                 status_el.classes(replace="text-green-600 font-semibold text-sm")
                                 indicator.visible = False
