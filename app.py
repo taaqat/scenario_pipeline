@@ -58,29 +58,48 @@ ACTION_DEPS = {
 STEPS_INFO = {
     "A1": {"icon": "article", "color": "blue", "title": "Expected Scenarios",
            "desc": "Identify structural changes from news articles.",
-           "depends": None, "check_file": "a1_phase3_scenarios.json"},
+           "depends": None,
+           "check_file": "a1_phase3_scenarios.json",
+           "output_file": "A1_expected_scenarios_ja.json"},
     "B":  {"icon": "sensors", "color": "green", "title": "Weak Signal Selection",
            "desc": "Score, rank and filter weak signals.",
-           "depends": None, "check_file": "b_phase3_dedup_selected.json"},
+           "depends": None,
+           "check_file": "b_phase3_dedup_selected.json",
+           "output_file": "B_selected_weak_signals_ja.json"},
     "C":  {"icon": "bolt", "color": "purple", "title": "Unexpected Scenarios",
            "desc": "Generate surprising futures from weak signals.",
-           "depends": "B", "check_file": "c_phase2_scenarios.json"},
+           "depends": "B",
+           "check_file": "c_phase2_scenarios.json",
+           "output_file": "C_unexpected_scenarios_ja.json"},
     "D":  {"icon": "lightbulb", "color": "amber", "title": "Opportunity Scenarios",
            "desc": "Cross A1 x C for business opportunities.",
-           "depends": "A1+C", "check_file": "d_phase2_scenarios.json"},
+           "depends": "A1+C",
+           "check_file": "d_phase2_scenarios.json",
+           "output_file": "D_opportunity_scenarios_ja.json"},
 }
 
 
 def step_status(code):
-    """Return (status_str, detail_str, timestamp_str)."""
+    """Return (status_str, detail_str, timestamp_str).
+    Prioritizes final output count over intermediate count."""
+    from utils.data_io import read_json
     info = STEPS_INFO[code]
+
+    # Check final output first
+    output_path = cfg.OUTPUT_DIR / info["output_file"]
+    if output_path.exists():
+        data = read_json(output_path)
+        mtime = datetime.fromtimestamp(output_path.stat().st_mtime).strftime("%m/%d %H:%M")
+        if data:
+            return ("done", f"{len(data)} delivered", mtime)
+
+    # Fallback to intermediate
     path = cfg.INTERMEDIATE_DIR / info["check_file"]
     if path.exists():
-        from utils.data_io import read_json
         data = read_json(path)
         mtime = datetime.fromtimestamp(path.stat().st_mtime).strftime("%m/%d %H:%M")
         if data:
-            return ("done", f"{len(data)} items", mtime)
+            return ("done", f"{len(data)} candidates", mtime)
         return ("empty", "0 items", mtime)
     return ("pending", "Not started", "")
 
@@ -95,41 +114,45 @@ def check_dep(step_key):
 
 
 def build_summary(step_key):
-    """Build a result summary after a run."""
+    """Build a result summary after a run, including preview titles."""
     try:
         from utils.data_io import read_json
         summary_map = {
-            "a1_cluster_generate": ("a1_phase3_scenarios.json", "scenarios generated"),
-            "rerank_a": ("a1_phase4_ranked.json", "scenarios after ranking"),
-            "b_select": ("b_phase2_top3000_candidates.json", "signals selected"),
-            "b_dedup": ("b_phase3_dedup_selected.json", "signals after dedup"),
-            "c_cluster": ("c_phase1_clusters.json", "signal groups created"),
-            "c_generate": ("c_phase2_scenarios.json", "scenarios generated"),
-            "c_rank": None,  # output files
-            "d_pair": ("d_phase1_pairs.json", "pairs created"),
-            "d_generate": ("d_phase2_scenarios.json", "scenarios generated"),
-            "d_rank": None,
-            "rerank_a": None, "rerank_c": None, "rerank_d": None,
+            "a1_cluster_generate": ("a1_phase3_scenarios.json", "scenarios generated", "title_ja"),
+            "b_select": ("b_phase2_top3000_candidates.json", "signals selected", "title_ja"),
+            "b_dedup": ("b_phase3_dedup_selected.json", "signals after dedup", "title_ja"),
+            "c_cluster": ("c_phase1_clusters.json", "signal groups created", "theme_ja"),
+            "c_generate": ("c_phase2_scenarios.json", "scenarios generated", "title_ja"),
+            "d_pair": ("d_phase1_pairs.json", "pairs created", None),
+            "d_generate": ("d_phase2_scenarios.json", "scenarios generated", "opportunity_title_ja"),
         }
         info = summary_map.get(step_key)
         if info:
-            fname, label = info
+            fname, label, title_key = info
             data = read_json(cfg.INTERMEDIATE_DIR / fname)
-            return {"count": len(data), "label": label}
+            previews = []
+            if title_key:
+                for item in data[:3]:
+                    t = item.get(title_key, item.get("title", ""))
+                    if t:
+                        previews.append(t[:40])
+            return {"count": len(data), "label": label, "previews": previews}
 
         # For rank/rerank steps, check output files
         output_map = {
-            "c_rank": "C_unexpected_scenarios_ja.json",
-            "d_rank": "D_opportunity_scenarios_ja.json",
-            "rerank_a": "A1_expected_scenarios_ja.json",
-            "rerank_c": "C_unexpected_scenarios_ja.json",
-            "rerank_d": "D_opportunity_scenarios_ja.json",
+            "c_rank": ("C_unexpected_scenarios_ja.json", "title_ja"),
+            "d_rank": ("D_opportunity_scenarios_ja.json", "opportunity_title_ja"),
+            "rerank_a": ("A1_expected_scenarios_ja.json", "title_ja"),
+            "rerank_c": ("C_unexpected_scenarios_ja.json", "title_ja"),
+            "rerank_d": ("D_opportunity_scenarios_ja.json", "opportunity_title_ja"),
         }
         if step_key in output_map:
-            opath = cfg.OUTPUT_DIR / output_map[step_key]
+            fname, title_key = output_map[step_key]
+            opath = cfg.OUTPUT_DIR / fname
             if opath.exists():
                 data = read_json(opath)
-                return {"count": len(data), "label": "scenarios passed all filters"}
+                previews = [item.get(title_key, "")[:40] for item in data[:3] if item.get(title_key)]
+                return {"count": len(data), "label": "scenarios passed all filters", "previews": previews}
         return None
     except Exception:
         return None
@@ -142,7 +165,7 @@ class LogHandler(logging.Handler):
             state["logs"] = state["logs"][-300:]
 
 
-async def run_step(step, overrides, status_el, indicator, log_area, summary_box):
+async def run_step(step, overrides, status_el, indicator, log_area, summary_box, progress_bar=None):
     if state["running"]:
         ui.notify("Already running — please wait.", type="warning")
         return
@@ -159,6 +182,8 @@ async def run_step(step, overrides, status_el, indicator, log_area, summary_box)
     status_el.text = f"Running {label}..."
     status_el.classes(replace="text-amber-600 font-semibold text-sm")
     indicator.visible = True
+    if progress_bar:
+        progress_bar.visible = True
     log_area.clear()
 
     # Clear summary
@@ -283,14 +308,18 @@ def main_page():
     summary_ref = [None]
 
     # ─── Header ─────────────────────────
-    with ui.row().classes("w-full bg-white border-b px-8 py-3 items-center justify-between"):
-        with ui.row().classes("items-center gap-3"):
-            ui.icon("science", size="md").classes("text-blue-600")
-            ui.label("JRI Living Lab+").classes("text-lg font-bold text-gray-800")
-        with ui.row().classes("items-center gap-3"):
-            indicator = ui.spinner("dots", size="sm", color="amber")
-            indicator.visible = False
-            status_el = ui.label("Ready").classes("text-green-600 font-semibold text-sm")
+    with ui.column().classes("w-full gap-0"):
+        with ui.row().classes("w-full bg-white border-b px-8 py-3 items-center justify-between"):
+            with ui.row().classes("items-center gap-3"):
+                ui.icon("science", size="md").classes("text-blue-600")
+                ui.label("JRI Living Lab+").classes("text-lg font-bold text-gray-800")
+            with ui.row().classes("items-center gap-3"):
+                indicator = ui.spinner("dots", size="sm", color="amber")
+                indicator.visible = False
+                status_el = ui.label("Ready").classes("text-green-600 font-semibold text-sm")
+        # Global progress bar (visible only when running)
+        progress_bar = ui.linear_progress(value=0, show_value=False).classes("w-full").props("indeterminate color=amber")
+        progress_bar.visible = False
 
     # ─── Tabs ───────────────────────────
     with ui.tabs().classes("w-full bg-white border-b px-4").props(
@@ -448,6 +477,7 @@ def main_page():
                         if not summary_ref[0]:
                             summary_ref[0] = summary_box
 
+                        action_buttons = []  # (btn, step_key, dep_msg) for reactive updates
                         with ui.row().classes("gap-3 flex-wrap items-center"):
                             for i, (lbl, icn, key, is_outline, est) in enumerate(actions):
                                 can, dep_msg = check_dep(key)
@@ -459,7 +489,6 @@ def main_page():
 
                                 with ui.column().classes("gap-1"):
                                     async def _click(k=key, sb=summary_box):
-                                        # Confirm dialog for non-trivial operations
                                         if k not in ("b_select",):
                                             with ui.dialog() as dlg, ui.card().classes("p-5"):
                                                 ui.label("Confirm Run").classes("text-lg font-bold mb-2")
@@ -470,17 +499,18 @@ def main_page():
                                                     ui.button("Cancel", on_click=dlg.close).props("flat")
                                                     ui.button("Run", icon="play_arrow",
                                                         on_click=lambda d=dlg: (d.close(), None) or asyncio.ensure_future(
-                                                            run_step(k, params, status_el, indicator, log_ref[0] or ui.log(), sb)
+                                                            run_step(k, params, status_el, indicator, log_ref[0] or ui.log(), sb, progress_bar)
                                                         )
                                                     ).props(f"color={info['color']}")
                                             dlg.open()
                                         else:
-                                            await run_step(k, params, status_el, indicator, log_ref[0] or ui.log(), sb)
+                                            await run_step(k, params, status_el, indicator, log_ref[0] or ui.log(), sb, progress_bar)
 
                                     step_num = f"Step {i+1}: " if len(actions) > 1 else ""
                                     btn = ui.button(f"{step_num}{lbl}", icon=icn, on_click=_click).props(props)
                                     if not can:
                                         btn.tooltip(dep_msg)
+                                    action_buttons.append((btn, key))
                                     ui.html(f'<span class="est-chip">{est}</span>')
 
                     # Log (collapsed)
@@ -491,7 +521,7 @@ def main_page():
                         if not log_ref[0]:
                             log_ref[0] = la
 
-                        def tick(area=la, sb=summary_box if summary_ref[0] else None):
+                        def tick(area=la, sb=summary_box if summary_ref[0] else None, btns=action_buttons):
                             for line in state["logs"]:
                                 area.push(line)
                             state["logs"] = []
@@ -499,19 +529,37 @@ def main_page():
                                 status_el.text = f"Done ({state['last_run']})"
                                 status_el.classes(replace="text-green-600 font-semibold text-sm")
                                 indicator.visible = False
+                                if progress_bar:
+                                    progress_bar.visible = False
+                                # Update button disabled states reactively
+                                for btn, key in btns:
+                                    can, _ = check_dep(key)
+                                    if can:
+                                        btn.props(remove="disable")
+                                    else:
+                                        btn.props(add="disable")
                                 # Show summary
                                 s = state.get("last_summary")
                                 if s and sb:
                                     sb.clear()
                                     with sb:
                                         if "error" in s:
-                                            with ui.row().classes("summary-err p-3 items-center gap-2"):
-                                                ui.icon("error", size="sm").classes("text-red-500")
-                                                ui.label(f"Error: {s['error'][:100]}").classes("text-sm text-red-700")
+                                            with ui.column().classes("summary-err p-4 gap-1"):
+                                                with ui.row().classes("items-center gap-2"):
+                                                    ui.icon("error", size="sm").classes("text-red-500")
+                                                    ui.label(f"Error: {s['error'][:100]}").classes("text-sm text-red-700")
                                         elif "count" in s:
-                                            with ui.row().classes("summary-ok p-3 items-center gap-3"):
-                                                ui.icon("check_circle", size="sm").classes("text-green-500")
-                                                ui.label(f"{s['count']} {s['label']}").classes("text-sm font-semibold text-green-700")
+                                            with ui.column().classes("summary-ok p-4 gap-2"):
+                                                with ui.row().classes("items-center gap-3"):
+                                                    ui.icon("check_circle", size="sm").classes("text-green-500")
+                                                    ui.label(f"{s['count']} {s['label']}").classes("text-sm font-semibold text-green-700")
+                                                previews = s.get("previews", [])
+                                                if previews:
+                                                    ui.label("Preview:").classes("text-xs text-gray-400 mt-1")
+                                                    for p in previews:
+                                                        with ui.row().classes("items-center gap-2"):
+                                                            ui.icon("chevron_right", size="xs").classes("text-green-300")
+                                                            ui.label(p).classes("text-xs text-gray-600")
                                     state["last_summary"] = None  # show once
                         ui.timer(1.0, tick)
 
