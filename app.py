@@ -1,12 +1,9 @@
 """
-JRI Pipeline V2 — Web UI (NiceGUI)
+JRI Pipeline V2 — Web UI
 """
 import asyncio
-import json
 import logging
-import os
 from datetime import datetime
-from pathlib import Path
 
 from nicegui import ui
 
@@ -16,210 +13,89 @@ from config import UI_PARAMS, apply_overrides
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# ─── State ──────────────────────────────────────────
-state = {"running": False, "step": "", "logs": [], "last_run": None, "last_summary": None,
-         "phase": "", "phase_num": 0, "phase_total": 0}
+state = {"running": False, "step": "", "logs": [], "last_run": None,
+         "last_summary": None, "phase": "", "phase_num": 0, "phase_total": 0}
 
 LABELS = {
-    "run_a1": "A1 Full Run", "run_b": "B Full Run", "run_c": "C Full Run", "run_d": "D Full Run",
-    "a1_cluster_generate": "A1 Cluster + Generate",
-    "rerank_a": "A1 Re-rank", "b_select": "B Select",
-    "b_dedup": "B Dedup", "c_cluster": "C Group",
-    "c_generate": "C Generate", "c_rank": "C Rank",
-    "d_pair": "D Pair", "d_generate": "D Generate",
-    "d_rank": "D Rank", "rerank_c": "C Re-rank", "rerank_d": "D Re-rank",
+    "run_a1": "Step A1", "run_b": "Step B", "run_c": "Step C", "run_d": "Step D",
+    "b_select": "B Preview",
+    "c_cluster": "C Regroup",
 }
-def est_full(key, params):
-    """Dynamic time/cost estimate based on current settings."""
-    a1_n = params.get("A1_GENERATE_N", 20) or 20
-    c_n = params.get("C_GENERATE_N", 150) or 150
-    d_n = params.get("D_GENERATE_N", 40) or 40
-    if key == "run_a1":
-        mins = max(3, int(a1_n * 0.5))
-        cost = max(1, round(a1_n * 0.25))
-        return f"~{mins} min · ~${cost}"
-    elif key == "run_b":
-        return "~3-5 min · ~$1"
-    elif key == "run_c":
-        mins = max(3, int(c_n * 0.1))
-        cost = max(1, round(c_n * 0.06))
-        return f"~{mins} min · ~${cost}"
-    elif key == "run_d":
-        mins = max(3, int(d_n * 0.3))
-        cost = max(1, round(d_n * 0.15))
-        return f"~{mins} min · ~${cost}"
-    return EST_TIME.get(key, "")
-
-# Estimated time per action
 EST_TIME = {
-    "a1_cluster_generate": "~5-10 min, ~$3-5",
-    "rerank_a": "~2-3 min, ~$1",
-    "b_select": "< 10 sec, free",
-    "b_dedup": "~2-3 min, ~$1",
-    "c_cluster": "~1-2 min, ~$1",
-    "c_generate": "~5-15 min, ~$5-10",
-    "c_rank": "~2-3 min, ~$1",
-    "rerank_c": "~2-3 min, ~$1",
-    "d_pair": "~1-2 min, ~$0.5",
-    "d_generate": "~3-8 min, ~$3-5",
-    "d_rank": "~2-3 min, ~$1",
-    "rerank_d": "~2-3 min, ~$1",
+    "b_select": "instant · free",
+    "c_cluster": "~1-2 min · ~$1",
 }
-
-# Action dependencies: key = step_key, value = intermediate file that must exist
-ACTION_DEPS = {
-    "c_generate": ("c_phase1_clusters.json", "Run 'Group Signals' first"),
-    "c_rank": ("c_phase2_scenarios.json", "Run 'Generate' first"),
-    "d_generate": ("d_phase1_pairs.json", "Run 'Create Pairs' first"),
-    "d_rank": ("d_phase2_scenarios.json", "Run 'Generate' first"),
-    "rerank_a": ("a1_phase3_scenarios.json", "Run A1 first"),
-    "rerank_c": ("c_phase2_scenarios.json", "Run C Generate first"),
-    "rerank_d": ("d_phase2_scenarios.json", "Run D Generate first"),
-}
-
-# What each action replaces + downstream impact
 ACTION_IMPACT = {
     "run_a1": ("Replaces all A1 results.", "Re-run D afterward for updated opportunities."),
     "run_b": ("Replaces signal selection.", "Re-run C and D afterward."),
     "run_c": ("Replaces all C results.", "Re-run D afterward for updated opportunities."),
     "run_d": ("Replaces all D results.", ""),
-    "a1_cluster_generate": ("Replaces: A1 theme clusters + generated scenarios.",
-                            "You will need to re-run A1 Re-rank and Step D afterward."),
-    "rerank_a": ("Replaces: A1 final scored/filtered results.", ""),
-    "b_select": ("Replaces: B signal selection.", "You may want to re-run B Dedup afterward."),
-    "b_dedup": ("Replaces: B deduplicated signals.",
-                "Step C uses these signals — re-run C if you want updated results."),
-    "c_cluster": ("Replaces: C signal groupings.",
-                  "You will need to re-run C Generate and C Rank afterward."),
-    "c_generate": ("Replaces: C generated scenarios.",
-                   "You will need to re-run C Rank afterward. Step D uses C results."),
-    "c_rank": ("Replaces: C final scored/filtered results.",
-               "Step D uses these results — re-run D if you want updated opportunities."),
-    "d_pair": ("Replaces: D pair selection.",
-               "You will need to re-run D Generate and D Rank afterward."),
-    "d_generate": ("Replaces: D generated opportunity scenarios.",
-                   "You will need to re-run D Rank afterward."),
-    "d_rank": ("Replaces: D final scored/filtered/classified results.", ""),
-    "rerank_c": ("Replaces: C final scored/filtered results.", ""),
-    "rerank_d": ("Replaces: D final scored/filtered results.", ""),
+    "b_select": ("Replaces signal selection.", ""),
+    "c_cluster": ("Replaces signal groupings only.", "Run Step C for full results."),
 }
-
-STEPS_INFO = {
-    "A1": {"icon": "article", "color": "blue", "title": "Expected Scenarios",
-           "desc": "Identify structural changes from news articles.",
-           "depends": None,
-           "check_file": "a1_phase3_scenarios.json",
-           "output_file": "A1_expected_scenarios_ja.json"},
-    "B":  {"icon": "sensors", "color": "green", "title": "Weak Signal Selection",
-           "desc": "Score, rank and filter weak signals.",
-           "depends": None,
-           "check_file": "b_phase3_dedup_selected.json",
-           "output_file": "B_selected_weak_signals_ja.json"},
-    "C":  {"icon": "bolt", "color": "purple", "title": "Unexpected Scenarios",
-           "desc": "Generate surprising futures from weak signals.",
-           "depends": "B",
-           "check_file": "c_phase2_scenarios.json",
-           "output_file": "C_unexpected_scenarios_ja.json"},
-    "D":  {"icon": "lightbulb", "color": "amber", "title": "Opportunity Scenarios",
-           "desc": "Cross A1 x C for business opportunities.",
-           "depends": "A1+C",
-           "check_file": "d_phase2_scenarios.json",
-           "output_file": "D_opportunity_scenarios_ja.json"},
+STEPS = {
+    "A1": {"icon": "article", "title": "Expected Scenarios",
+           "sub": "Structural changes from news articles",
+           "output": "A1_expected_scenarios_ja.json", "check": "a1_phase3_scenarios.json"},
+    "B":  {"icon": "sensors", "title": "Weak Signals",
+           "sub": "Scored and filtered signals",
+           "output": "B_selected_weak_signals_ja.json", "check": "b_phase3_dedup_selected.json"},
+    "C":  {"icon": "bolt", "title": "Unexpected Scenarios",
+           "sub": "Surprising futures from signals",
+           "output": "C_unexpected_scenarios_ja.json", "check": "c_phase2_scenarios.json"},
+    "D":  {"icon": "lightbulb", "title": "Opportunities",
+           "sub": "Business opportunities from A1 × C",
+           "output": "D_opportunity_scenarios_ja.json", "check": "d_phase2_scenarios.json"},
 }
 
 
-def step_status(code):
-    """Return (status_str, detail_str, timestamp_str).
-    Prioritizes final output count over intermediate count."""
+def get_status(code):
     from utils.data_io import read_json
-    info = STEPS_INFO[code]
-
-    # Check final output first
-    output_path = cfg.OUTPUT_DIR / info["output_file"]
-    if output_path.exists():
-        data = read_json(output_path)
-        mtime = datetime.fromtimestamp(output_path.stat().st_mtime).strftime("%m/%d %H:%M")
-        if data:
-            return ("done", f"{len(data)} delivered", mtime)
-
-    # Fallback to intermediate
-    path = cfg.INTERMEDIATE_DIR / info["check_file"]
-    if path.exists():
-        data = read_json(path)
-        mtime = datetime.fromtimestamp(path.stat().st_mtime).strftime("%m/%d %H:%M")
-        if data:
-            return ("done", f"{len(data)} candidates", mtime)
-        return ("empty", "0 items", mtime)
-    return ("pending", "Not started", "")
+    info = STEPS[code]
+    for key, label in [(info["output"], "delivered"), (info["check"], "candidates")]:
+        d = (cfg.OUTPUT_DIR if key == info["output"] else cfg.INTERMEDIATE_DIR)
+        p = d / key
+        if p.exists():
+            data = read_json(p)
+            if data:
+                t = datetime.fromtimestamp(p.stat().st_mtime).strftime("%m/%d %H:%M")
+                return "done", f"{len(data)} {label}", t
+    return "pending", "Not started", ""
 
 
-def check_dep(step_key):
-    """Return (can_run: bool, message: str)."""
-    if step_key not in ACTION_DEPS:
-        return True, ""
-    dep_file, msg = ACTION_DEPS[step_key]
-    path = cfg.INTERMEDIATE_DIR / dep_file
-    return path.exists(), msg
+def est_full(key, params):
+    a1 = params.get("A1_GENERATE_N", 20) or 20
+    c = params.get("C_GENERATE_N", 150) or 150
+    d = params.get("D_GENERATE_N", 40) or 40
+    m = {"run_a1": max(3, int(a1*0.5)), "run_b": 4, "run_c": max(3, int(c*0.1)), "run_d": max(3, int(d*0.3))}
+    cost = {"run_a1": max(1, round(a1*0.25)), "run_b": 1, "run_c": max(1, round(c*0.06)), "run_d": max(1, round(d*0.15))}
+    if key in m:
+        return f"~{m[key]} min · ~${cost[key]}"
+    return EST_TIME.get(key, "")
 
 
 def build_summary(step_key):
-    """Build a result summary after a run, including preview titles."""
     try:
         from utils.data_io import read_json
-        # Full runs check output files
-        output_map_full = {
+        omap = {
             "run_a1": ("A1_expected_scenarios_ja.json", "scenarios delivered", "title_ja"),
             "run_b": ("B_selected_weak_signals_ja.json", "signals selected", "title_ja"),
             "run_c": ("C_unexpected_scenarios_ja.json", "scenarios delivered", "title_ja"),
             "run_d": ("D_opportunity_scenarios_ja.json", "opportunities delivered", "opportunity_title_ja"),
-        }
-        if step_key in output_map_full:
-            fn, lbl, tk = output_map_full[step_key]
-            p = cfg.OUTPUT_DIR / fn
-            if p.exists():
-                d = read_json(p)
-                pv = [it.get(tk, "")[:40] for it in d[:3] if it.get(tk)]
-                return {"count": len(d), "label": lbl, "previews": pv, "type": "Newly generated"}
-
-        summary_map = {
-            "a1_cluster_generate": ("a1_phase3_scenarios.json", "scenarios generated", "title_ja"),
             "b_select": ("b_phase2_top3000_candidates.json", "signals selected", "title_ja"),
-            "b_dedup": ("b_phase3_dedup_selected.json", "signals after dedup", "title_ja"),
-            "c_cluster": ("c_phase1_clusters.json", "signal groups created", "theme_ja"),
-            "c_generate": ("c_phase2_scenarios.json", "scenarios generated", "title_ja"),
-            "d_pair": ("d_phase1_pairs.json", "pairs created", None),
-            "d_generate": ("d_phase2_scenarios.json", "scenarios generated", "opportunity_title_ja"),
+            "c_cluster": ("c_phase1_clusters.json", "groups created", "theme_ja"),
         }
-        info = summary_map.get(step_key)
-        if info:
-            fname, label, title_key = info
-            data = read_json(cfg.INTERMEDIATE_DIR / fname)
-            previews = []
-            if title_key:
-                for item in data[:3]:
-                    t = item.get(title_key, item.get("title", ""))
-                    if t:
-                        previews.append(t[:40])
-            return {"count": len(data), "label": label, "previews": previews, "type": "Partial run"}
-
-        # For rank/rerank steps, check output files
-        output_map = {
-            "c_rank": ("C_unexpected_scenarios_ja.json", "title_ja"),
-            "d_rank": ("D_opportunity_scenarios_ja.json", "opportunity_title_ja"),
-            "rerank_a": ("A1_expected_scenarios_ja.json", "title_ja"),
-            "rerank_c": ("C_unexpected_scenarios_ja.json", "title_ja"),
-            "rerank_d": ("D_opportunity_scenarios_ja.json", "opportunity_title_ja"),
-        }
-        if step_key in output_map:
-            fname, title_key = output_map[step_key]
-            opath = cfg.OUTPUT_DIR / fname
-            if opath.exists():
-                data = read_json(opath)
-                previews = [item.get(title_key, "")[:40] for item in data[:3] if item.get(title_key)]
-                return {"count": len(data), "label": "passed all filters", "previews": previews, "type": "Re-filtered"}
-        return None
+        if step_key in omap:
+            fn, lbl, tk = omap[step_key]
+            d = cfg.OUTPUT_DIR if step_key.startswith("run_") else cfg.INTERMEDIATE_DIR
+            p = d / fn
+            if p.exists():
+                data = read_json(p)
+                pv = [it.get(tk, "")[:40] for it in data[:3] if tk and it.get(tk)]
+                return {"count": len(data), "label": lbl, "previews": pv}
     except Exception:
-        return None
+        pass
+    return None
 
 
 class LogHandler(logging.Handler):
@@ -229,648 +105,395 @@ class LogHandler(logging.Handler):
             state["logs"] = state["logs"][-300:]
 
 
-async def run_step(step, overrides, status_el, indicator, log_area, summary_box, progress_bar=None):
+async def run_step(key, ov, ui_refs):
     if state["running"]:
-        ui.notify("Already running — please wait.", type="warning")
-        return
-
-    # Check dependency
-    can_run, dep_msg = check_dep(step)
-    if not can_run:
-        ui.notify(f"Cannot run: {dep_msg}", type="negative")
-        return
-
-    state.update(running=True, step=step, logs=[], last_summary=None)
-    apply_overrides(overrides)
-    label = LABELS.get(step, step)
-    status_el.text = f"Running {label}..."
-    status_el.classes(replace="text-amber-600 font-semibold text-sm")
-    indicator.visible = True
-    if progress_bar:
-        progress_bar.visible = True
-    log_area.clear()
-
-    # Clear summary, update state for progress tracking
-    state["phase"] = "Starting..."
-    state["phase_num"] = 0
-    state["phase_total"] = 0
-    summary_box.clear()
+        ui.notify("Already running.", type="warning"); return
+    state.update(running=True, step=key, logs=[], last_summary=None, phase="Starting...", phase_num=0, phase_total=0)
+    apply_overrides(ov)
+    ui_refs["status"].text = f"Running..."
+    ui_refs["status"].classes(replace="text-amber-600 text-xs font-medium")
+    ui_refs["indicator"].visible = True
+    ui_refs["pbar"].visible = True
 
     def _run():
+        def _p(name, n, t):
+            state.update(phase=name, phase_num=n, phase_total=t)
         try:
-            def _progress(phase_name, num, total):
-                state["phase"] = phase_name
-                state["phase_num"] = num
-                state["phase_total"] = total
-
-            # ── Full step runs (one-click) ──
-            if step == "run_a1":
+            if key == "run_a1":
                 from steps.step_a1 import phase2_cluster, phase3_generate, phase4_rank
-                _progress("Clustering articles...", 1, 3)
-                themes = phase2_cluster()
-                _progress("Generating scenarios...", 2, 3)
-                scenarios = phase3_generate(themes)
-                _progress("Scoring & filtering...", 3, 3)
-                phase4_rank(scenarios)
-            elif step == "run_b":
+                _p("Clustering articles...", 1, 3); themes = phase2_cluster()
+                _p("Generating scenarios...", 2, 3); scenarios = phase3_generate(themes)
+                _p("Scoring & filtering...", 3, 3); phase4_rank(scenarios)
+            elif key == "run_b":
                 from steps.step_b import select_top_signals, diversity_dedup
-                _progress("Selecting top signals...", 1, 2)
-                candidates = select_top_signals()
-                _progress("Removing duplicates...", 2, 2)
-                diversity_dedup(candidates)
-            elif step == "run_c":
+                _p("Selecting signals...", 1, 2); cands = select_top_signals()
+                _p("Removing duplicates...", 2, 2); diversity_dedup(cands)
+            elif key == "run_c":
                 from steps.step_c import phase1_cluster, phase1_random, phase2_generate, phase3_rank
-                mode_label = "Random grouping..." if cfg.C_MODE == "random" else "Clustering signals..."
-                _progress(mode_label, 1, 3)
-                clusters = (phase1_random if cfg.C_MODE == "random" else phase1_cluster)()
-                _progress("Generating scenarios...", 2, 3)
-                scenarios = phase2_generate(clusters)
-                _progress("Scoring & filtering...", 3, 3)
-                phase3_rank(scenarios)
-            elif step == "run_d":
+                _p("Grouping signals...", 1, 3)
+                cl = (phase1_random if cfg.C_MODE == "random" else phase1_cluster)()
+                _p("Generating scenarios...", 2, 3); sc = phase2_generate(cl)
+                _p("Scoring & filtering...", 3, 3); phase3_rank(sc)
+            elif key == "run_d":
                 from steps.step_d import phase1_select_pairs, phase1_random_pairs, phase2_generate, phase3_rank
                 from utils.data_io import read_json
                 exp = read_json(cfg.OUTPUT_DIR / "A1_expected_scenarios_ja.json")
                 unexp = read_json(cfg.OUTPUT_DIR / "C_unexpected_scenarios_ja.json")
-                mode_label = "Random pairing..." if cfg.D_MODE == "random" else "Selecting best pairs..."
-                _progress(mode_label, 1, 3)
+                _p("Pairing scenarios...", 1, 3)
                 pairs = (phase1_random_pairs if cfg.D_MODE == "random" else phase1_select_pairs)(exp, unexp)
-                _progress("Generating opportunities...", 2, 3)
-                scenarios = phase2_generate(pairs, exp, unexp)
-                _progress("Scoring & classifying...", 3, 3)
-                phase3_rank(scenarios)
-            # ── Individual sub-steps (advanced) ──
-            elif step == "a1_cluster_generate":
-                from steps.step_a1 import phase2_cluster, phase3_generate
-                phase3_generate(phase2_cluster())
-            elif step == "rerank_a":
-                from rerank import rerank_a; rerank_a()
-            elif step == "b_select":
+                _p("Generating opportunities...", 2, 3); sc = phase2_generate(pairs, exp, unexp)
+                _p("Scoring & classifying...", 3, 3); phase3_rank(sc)
+            elif key == "b_select":
                 from steps.step_b import select_top_signals; select_top_signals()
-            elif step == "b_dedup":
-                from steps.step_b import diversity_dedup; diversity_dedup()
-            elif step == "c_cluster":
+            elif key == "c_cluster":
                 from steps.step_c import phase1_cluster, phase1_random
                 (phase1_random if cfg.C_MODE == "random" else phase1_cluster)()
-            elif step == "c_generate":
-                from steps.step_c import phase2_generate; phase2_generate()
-            elif step == "c_rank":
-                from steps.step_c import phase3_rank; phase3_rank()
-            elif step == "rerank_c":
-                from rerank import rerank_c; rerank_c()
-            elif step == "d_pair":
-                from steps.step_d import phase1_select_pairs, phase1_random_pairs
-                (phase1_random_pairs if cfg.D_MODE == "random" else phase1_select_pairs)()
-            elif step == "d_generate":
-                from steps.step_d import phase2_generate; phase2_generate()
-            elif step == "d_rank":
-                from steps.step_d import phase3_rank; phase3_rank()
-            elif step == "rerank_d":
-                from rerank import rerank_d; rerank_d()
-            state["last_summary"] = build_summary(step)
-            state["logs"].append(f"Completed: {label}")
+            state["last_summary"] = build_summary(key)
         except Exception as e:
             logger.error(f"Error: {e}", exc_info=True)
             state["last_summary"] = {"error": str(e)}
         finally:
-            state.update(running=False, last_run=datetime.now().strftime("%H:%M:%S"))
-
+            state.update(running=False, last_run=datetime.now().strftime("%H:%M"))
     await asyncio.get_event_loop().run_in_executor(None, _run)
 
 
-# ─── Components ─────────────────────────────────────
-
-def render_settings(section, params, show_advanced=True):
+def render_params(section, P):
     items = [(k, v) for k, v in UI_PARAMS.items() if v["section"] == section]
-    main_items = [(k, v) for k, v in items if v.get("priority") == "main"]
-    adv_items = [(k, v) for k, v in items if v.get("priority") == "advanced"]
+    main = [(k, v) for k, v in items if v.get("priority") == "main"]
+    adv = [(k, v) for k, v in items if v.get("priority") == "advanced"]
 
-    def _item(key, spec):
-        default = spec["default"]
-        params.setdefault(key, default)
-        hint = spec.get("hint", "")
-        if spec["type"] == "number":
-            with ui.column().classes("w-full gap-0 py-1"):
-                with ui.row().classes("w-full items-center justify-between"):
-                    ui.label(spec["label"]).classes("text-sm text-gray-700")
-                    n = ui.number(value=default, min=spec.get("min", 0), max=spec.get("max", 100)
-                    ).classes("w-24").props("dense outlined")
-                    n.on_value_change(lambda e, k=key: params.update({k: e.value}))
-                if hint:
-                    ui.label(hint).classes("text-xs text-gray-400 -mt-1")
-        elif spec["type"] == "bool":
-            with ui.column().classes("w-full gap-0 py-1"):
-                with ui.row().classes("w-full items-center justify-between"):
-                    ui.label(spec["label"]).classes("text-sm text-gray-700")
-                    s = ui.switch(value=default).props("dense")
-                    s.on_value_change(lambda e, k=key: params.update({k: e.value}))
-                if hint:
-                    ui.label(hint).classes("text-xs text-gray-400")
-        elif spec["type"] == "select":
-            with ui.column().classes("w-full gap-0 py-1"):
-                with ui.row().classes("w-full items-center justify-between"):
-                    ui.label(spec["label"]).classes("text-sm text-gray-700")
-                    sel = ui.select(spec["options"], value=default).classes("w-40").props("dense outlined")
-                    sel.on_value_change(lambda e, k=key: params.update({k: e.value}))
-                if hint:
-                    ui.label(hint).classes("text-xs text-gray-400")
-        elif spec["type"] == "text":
-            with ui.column().classes("w-full gap-0 py-1"):
-                inp = ui.input(label=spec["label"], value=str(default)).classes("w-full").props("dense outlined")
-                inp.on_value_change(lambda e, k=key: params.update({k: e.value}))
-                if hint:
-                    ui.label(hint).classes("text-xs text-gray-400")
+    def _f(k, s):
+        d = s["default"]; P.setdefault(k, d); h = s.get("hint", "")
+        if s["type"] == "number":
+            with ui.row().classes("w-full items-center justify-between py-1"):
+                ui.label(s["label"]).classes("text-sm text-gray-600")
+                n = ui.number(value=d, min=s.get("min",0), max=s.get("max",100)).classes("w-24").props("dense outlined")
+                n.on_value_change(lambda e, k=k: P.update({k: e.value}))
+            if h: ui.label(h).classes("text-xs text-gray-400 -mt-1")
+        elif s["type"] == "bool":
+            with ui.row().classes("w-full items-center justify-between py-1"):
+                ui.label(s["label"]).classes("text-sm text-gray-600")
+                sw = ui.switch(value=d).props("dense")
+                sw.on_value_change(lambda e, k=k: P.update({k: e.value}))
+            if h: ui.label(h).classes("text-xs text-gray-400")
+        elif s["type"] == "select":
+            with ui.row().classes("w-full items-center justify-between py-1"):
+                ui.label(s["label"]).classes("text-sm text-gray-600")
+                sl = ui.select(s["options"], value=d).classes("w-40").props("dense outlined")
+                sl.on_value_change(lambda e, k=k: P.update({k: e.value}))
+            if h: ui.label(h).classes("text-xs text-gray-400 -mt-1")
+        elif s["type"] == "text":
+            ui.input(label=s["label"], value=str(d)).classes("w-full").props("dense outlined")
+            if h: ui.label(h).classes("text-xs text-gray-400")
 
-    for key, spec in main_items:
-        _item(key, spec)
-    if adv_items and show_advanced:
-        with ui.expansion("Advanced Filters", icon="tune").classes("w-full text-sm").props("dense"):
-            for key, spec in adv_items:
-                _item(key, spec)
+    for k, s in main:
+        _f(k, s)
+    if adv:
+        with ui.expansion("Score filters", icon="tune").classes("w-full text-sm text-gray-400").props("dense"):
+            for k, s in adv:
+                _f(k, s)
             def _reset():
-                for key, spec in adv_items:
-                    params[key] = spec["default"]
-                ui.notify("Filters reset to defaults", type="info")
+                for k, s in adv: P[k] = s["default"]
+                ui.notify("Reset to defaults", type="info")
             ui.button("Reset to defaults", icon="restart_alt", on_click=_reset).props("flat size=sm color=grey").classes("mt-2")
 
 
 # ─── Page ───────────────────────────────────────────
 
 @ui.page("/")
-def main_page():
+def page():
     ui.add_head_html("""<style>
         body { background: #f7f8fa; }
-        .card-s { border-radius: 14px !important; border: 1px solid #ebedf0 !important;
-                  box-shadow: none !important; }
+        .card-s { border-radius: 14px !important; border: 1px solid #ebedf0 !important; box-shadow: none !important; }
         .card-s:hover { border-color: #dcdfe3 !important; }
-        .hero-bg { background: #111827; border-radius: 16px !important; }
-        .st-done { background: #ecfdf5; color: #065f46; }
-        .st-wait { background: #f3f4f6; color: #6b7280; }
-        .summary-ok { background: #f0fdf4; border: 1px solid #d1fae5; border-radius: 10px; }
-        .summary-err { background: #fef2f2; border: 1px solid #fee2e2; border-radius: 10px; }
-        .est-chip { color: #9ca3af; font-size: 11px; }
         .q-tab { text-transform: none !important; font-size: 13px !important; }
         .q-btn { text-transform: none !important; }
+        .progress-card { background: #fffbeb; border: 1px solid #fde68a; border-radius: 12px; padding: 16px; }
+        .result-ok { background: #f0fdf4; border: 1px solid #d1fae5; border-radius: 12px; padding: 16px; }
+        .result-err { background: #fef2f2; border: 1px solid #fee2e2; border-radius: 12px; padding: 16px; }
     </style>""")
 
-    params = {}
-    log_ref = [None]
-    summary_ref = [None]
+    P = {}
+    ui_refs = {}
 
-    # ─── Header ─────────────────────────
+    # Header
     with ui.column().classes("w-full gap-0"):
         with ui.row().classes("w-full bg-white border-b border-gray-100 px-6 py-2.5 items-center justify-between"):
-            with ui.row().classes("items-center gap-2.5"):
+            with ui.row().classes("items-center gap-2"):
                 ui.label("JRI").classes("text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded")
                 ui.label("Living Lab+ Pipeline").classes("text-sm font-semibold text-gray-700")
             with ui.row().classes("items-center gap-3"):
-                indicator = ui.spinner("dots", size="xs", color="amber")
-                indicator.visible = False
-                status_el = ui.label("Ready").classes("text-xs font-medium text-emerald-600")
-        progress_bar = ui.linear_progress(show_value=False).classes("w-full").props("indeterminate color=amber size=2px")
-        progress_bar.visible = False
+                ui_refs["indicator"] = ui.spinner("dots", size="xs", color="amber")
+                ui_refs["indicator"].visible = False
+                ui_refs["status"] = ui.label("Ready").classes("text-xs font-medium text-emerald-600")
+        ui_refs["pbar"] = ui.linear_progress(show_value=False).classes("w-full").props("indeterminate color=amber size=2px")
+        ui_refs["pbar"].visible = False
 
-    # ─── Tabs ───────────────────────────
-    with ui.tabs().classes("w-full bg-white border-b px-4").props(
-        "active-color=blue-8 indicator-color=blue-8 dense align=left"
+    # Tabs
+    with ui.tabs().classes("w-full bg-white border-b border-gray-100 px-4").props(
+        "active-color=indigo indicator-color=indigo dense no-caps align=left"
     ) as tabs:
-        t0 = ui.tab("dashboard", label="Dashboard", icon="dashboard")
-        t1 = ui.tab("a1", label="A1", icon="article")
-        t2 = ui.tab("b", label="B", icon="sensors")
-        t3 = ui.tab("c", label="C", icon="bolt")
-        t4 = ui.tab("d", label="D", icon="lightbulb")
-        t5 = ui.tab("results", label="Results", icon="download")
+        t_setup = ui.tab("setup", label="Setup", icon="settings")
+        t_a1 = ui.tab("a1", label="A1 Expected", icon="article")
+        t_b = ui.tab("b", label="B Signals", icon="sensors")
+        t_c = ui.tab("c", label="C Unexpected", icon="bolt")
+        t_d = ui.tab("d", label="D Opportunity", icon="lightbulb")
+        t_res = ui.tab("res", label="Results", icon="download")
 
-    with ui.tab_panels(tabs, value=t0).classes("w-full flex-grow bg-transparent"):
+    with ui.tab_panels(tabs, value=t_setup).classes("w-full flex-grow bg-transparent"):
 
-        # ══════════════════════════════════
-        #  DASHBOARD
-        # ══════════════════════════════════
-        with ui.tab_panel(t0):
-            with ui.column().classes("w-full max-w-5xl mx-auto py-6 gap-6"):
-                with ui.card().classes("w-full hero-bg text-white p-8"):
-                    ui.label("Scenario Analysis").classes("text-2xl font-bold mb-1")
-                    ui.label(
-                        "Generate foresight reports in 4 steps. Configure, run, download."
-                    ).classes("text-sm opacity-60 mb-5")
-                    ui.button("Start with A1  →", icon="arrow_forward",
-                        on_click=lambda: tabs.set_value("a1")
-                    ).props("color=white text-color=grey-9 unelevated size=sm")
+        # ═══ SETUP ═══
+        with ui.tab_panel(t_setup):
+            with ui.column().classes("w-full max-w-3xl mx-auto py-6 gap-5"):
+                ui.label("Setup").classes("text-xl font-semibold text-gray-800")
+                ui.label("Configure your analysis, then go to each step to run it.").classes("text-sm text-gray-400 -mt-3")
 
-                # Pipeline Status
-                with ui.card().classes("w-full card-s p-6"):
-                    ui.label("Pipeline Status").classes("text-lg font-bold text-gray-800 mb-4")
-                    status_ctr = ui.column().classes("w-full gap-2")
+                # Data
+                with ui.card().classes("w-full card-s p-5"):
+                    with ui.row().classes("items-center gap-2 mb-3"):
+                        ui.icon("cloud_upload", size="sm").classes("text-teal-500")
+                        ui.label("Data").classes("font-semibold text-gray-700")
+                    ui.label("Upload coming soon. Currently using pre-loaded datasets:").classes("text-xs text-gray-400 mb-2")
+                    for f in [cfg.A1_INPUT_FILE, cfg.B_INPUT_FILE]:
+                        with ui.row().classes("items-center gap-2 py-1"):
+                            ui.icon("description", size="xs").classes("text-gray-300")
+                            ui.label(f.name).classes("text-xs text-gray-500 font-mono")
+                    with ui.row().classes("mt-2 bg-blue-50 rounded-lg px-3 py-2 items-start gap-2"):
+                        ui.icon("info", size="xs").classes("text-blue-500 mt-0.5")
+                        ui.label(
+                            "Changing the topic adjusts AI focus but uses the same data. "
+                            "To analyze a different topic, new data is needed."
+                        ).classes("text-xs text-blue-700")
 
-                    def refresh_status():
-                        status_ctr.clear()
-                        with status_ctr:
-                            for code, info in STEPS_INFO.items():
-                                st, detail, mtime = step_status(code)
-                                with ui.card().classes("w-full p-4 cursor-pointer").on(
-                                    "click", lambda c=code: tabs.set_value(c.lower() if len(c) == 1 else "a1")
-                                ):
-                                    with ui.row().classes("w-full items-center gap-4"):
-                                        with ui.element("div").classes(
-                                            f"w-10 h-10 rounded-xl bg-{info['color']}-100 flex items-center justify-center shrink-0"
-                                        ):
-                                            ui.icon(info["icon"], size="sm").classes(f"text-{info['color']}-600")
-                                        with ui.column().classes("flex-grow gap-0"):
-                                            with ui.row().classes("items-center gap-2"):
-                                                ui.label(f"Step {code}").classes("font-bold text-gray-800")
-                                                ui.label(info["title"]).classes("text-sm text-gray-500")
-                                            if info["depends"]:
-                                                ui.label(f"Requires {info['depends']}").classes("text-xs text-gray-400")
-                                        if st == "done":
-                                            with ui.column().classes("items-end gap-0"):
-                                                with ui.element("div").classes("st-done px-3 py-1 rounded-full text-xs font-semibold"):
-                                                    ui.label(f"Done — {detail}")
-                                                ui.label(mtime).classes("text-xs text-gray-400 mt-0.5")
-                                        else:
-                                            with ui.element("div").classes("st-wait px-3 py-1 rounded-full text-xs font-semibold"):
-                                                ui.label("Not started")
-                                        ui.icon("chevron_right").classes("text-gray-300")
+                # Topic & Industries
+                with ui.card().classes("w-full card-s p-5"):
+                    with ui.row().classes("items-center gap-2 mb-3"):
+                        ui.icon("public", size="sm").classes("text-blue-500")
+                        ui.label("Topic & Industries").classes("font-semibold text-gray-700")
+                    render_params("Global", P, )
 
-                    refresh_status()
-                    ui.button("Refresh", icon="refresh", on_click=refresh_status).props("flat size=sm color=blue").classes("mt-2")
+                # Key settings per step
+                with ui.card().classes("w-full card-s p-5"):
+                    with ui.row().classes("items-center gap-2 mb-3"):
+                        ui.icon("tune", size="sm").classes("text-indigo-500")
+                        ui.label("Pipeline Settings").classes("font-semibold text-gray-700")
 
-                with ui.row().classes("w-full gap-5"):
-                    with ui.card().classes("flex-1 card-s p-5"):
-                        with ui.row().classes("items-center gap-2 mb-3"):
-                            ui.icon("database", size="sm").classes("text-teal-500")
-                            ui.label("Data").classes("font-bold text-gray-700")
-                        ui.label("Current datasets (upload coming soon):").classes("text-xs text-gray-400 mb-2")
-                        for f in [cfg.A1_INPUT_FILE, cfg.B_INPUT_FILE]:
-                            with ui.row().classes("items-center gap-2 py-1"):
-                                ui.icon("description", size="xs").classes("text-teal-400")
-                                ui.label(f.name).classes("text-xs text-gray-600 font-mono")
-                        with ui.row().classes("mt-2 bg-blue-50 rounded-lg px-3 py-2 items-start gap-2"):
-                            ui.icon("info", size="xs").classes("text-blue-500 mt-0.5")
-                            ui.label(
-                                "Changing the Research Topic adjusts how AI scores and generates scenarios, "
-                                "but the underlying data stays the same. "
-                                "To analyze a completely different topic, new datasets need to be uploaded."
-                            ).classes("text-xs text-blue-700")
+                    for section, label, icon in [
+                        ("A1 Expected", "A1 — Expected Scenarios", "article"),
+                        ("B Weak Signal", "B — Weak Signals", "sensors"),
+                        ("C Unexpected", "C — Unexpected Scenarios", "bolt"),
+                        ("D Opportunity", "D — Opportunities", "lightbulb"),
+                    ]:
+                        with ui.expansion(label, icon=icon).classes("w-full").props("dense"):
+                            render_params(section, P)
 
-                    with ui.card().classes("flex-1 card-s p-5"):
-                        with ui.row().classes("items-center gap-2 mb-3"):
-                            ui.icon("public", size="sm").classes("text-blue-500")
-                            ui.label("Global Settings").classes("font-bold text-gray-700")
-                        render_settings("Global", params, show_advanced=False)
-
-                with ui.card().classes("w-full card-s p-6"):
-                    with ui.expansion("What does each step do?", icon="help_outline").classes("w-full").props("dense"):
-                        defs = [
-                            ("A1 — Expected", "Structural, irreversible changes likely in the next decade."),
-                            ("B — Weak Signals", "Early signs outside your normal radar with potential societal impact."),
-                            ("C — Unexpected", "Surprising futures that even experts can't predict."),
-                            ("D — Opportunity", "Non-obvious business opportunities from crossing Expected x Unexpected."),
-                        ]
-                        for title, desc in defs:
-                            with ui.row().classes("py-1 items-start gap-2"):
-                                ui.label(title).classes("text-sm font-semibold text-gray-700 w-36 shrink-0")
-                                ui.label(desc).classes("text-sm text-gray-500")
-
-        # ══════════════════════════════════
-        #  STEP TAB BUILDER
-        # ══════════════════════════════════
-        def make_step_tab(panel, code, full_run_key, locked_note, section, adv_actions, extra_content=None):
-            info = STEPS_INFO[code]
-            full_est_key = full_run_key  # store key, compute dynamically
+        # ═══ STEP TABS ═══
+        def step_tab(panel, code, run_key, note=None, extra=None):
+            info = STEPS[code]
             with ui.tab_panel(panel):
-                with ui.column().classes("w-full max-w-4xl mx-auto py-6 gap-5"):
-
+                with ui.column().classes("w-full max-w-3xl mx-auto py-6 gap-5"):
                     # Header
-                    st, detail, mtime = step_status(code)
-                    with ui.row().classes("w-full items-center justify-between px-1"):
+                    st, det, tm = get_status(code)
+                    with ui.row().classes("w-full items-center justify-between"):
                         with ui.row().classes("items-center gap-3"):
                             ui.icon(info["icon"], size="sm").classes("text-gray-400")
                             with ui.column().classes("gap-0"):
                                 ui.label(f"Step {code} — {info['title']}").classes("text-lg font-semibold text-gray-800")
-                                ui.label(info["desc"]).classes("text-xs text-gray-400")
-                        with ui.column().classes("items-end gap-0"):
-                            if st == "done":
-                                ui.badge(f"Done — {detail}", color="green").classes("text-xs")
-                                ui.label(mtime).classes("text-xs text-gray-300 mt-0.5")
-                            else:
-                                ui.badge("Not started", color="grey").classes("text-xs")
+                                ui.label(info["sub"]).classes("text-xs text-gray-400")
+                        if st == "done":
+                            with ui.column().classes("items-end gap-0"):
+                                ui.badge(f"Done — {det}", color="green").classes("text-xs")
+                                ui.label(tm).classes("text-xs text-gray-300 mt-0.5")
+                        else:
+                            ui.badge("Not started", color="grey").classes("text-xs")
 
-                    # Extra content (e.g. mode comparison for C)
-                    if extra_content:
-                        extra_content()
+                    if note:
+                        with ui.row().classes("bg-amber-50 rounded-lg px-3 py-2 items-center gap-2"):
+                            ui.icon("info", size="xs").classes("text-amber-500")
+                            ui.label(note).classes("text-xs text-amber-700")
 
-                    # Settings
+                    if extra:
+                        extra()
+
+                    # Run card with built-in progress
                     with ui.card().classes("w-full card-s p-5"):
-                        if locked_note:
-                            with ui.row().classes("mb-3 bg-amber-50 rounded-lg px-3 py-2 items-center gap-2"):
-                                ui.icon("info", size="xs").classes("text-amber-500")
-                                ui.label(locked_note).classes("text-xs text-amber-700")
-                        ui.label("Settings").classes("text-xs font-bold text-gray-400 uppercase tracking-widest mb-3")
-                        render_settings(section, params)
-
-                    # Run — one main button + summary
-                    with ui.card().classes("w-full card-s p-5"):
-                        # Progress card (hidden initially, shown by tick during runs)
-                        progress_card = ui.card().classes("w-full bg-amber-50 border border-amber-200 p-4 mb-3").style("border-radius: 10px")
-                        progress_card.visible = False
-                        with progress_card:
+                        # Progress (hidden until running)
+                        progress_box = ui.column().classes("w-full mb-3")
+                        progress_box.visible = False
+                        with progress_box:
                             with ui.row().classes("items-center gap-3"):
                                 ui.spinner("dots", size="sm", color="amber")
-                                run_title_label = ui.label("Running...").classes("text-sm font-semibold text-amber-800")
-                            phase_label = ui.label("Starting...").classes("text-xs text-amber-600 mt-1")
-                            phase_progress = ui.linear_progress(value=0, show_value=False).classes("w-full mt-2").props("color=amber rounded size=8px")
+                                run_phase_title = ui.label("Running...").classes("text-sm font-semibold text-amber-800")
+                            run_phase_detail = ui.label("Starting...").classes("text-xs text-amber-600 mt-1")
+                            run_phase_bar = ui.linear_progress(value=0, show_value=False).classes("w-full mt-2").props("color=amber rounded size=8px")
 
-                        # Summary box (shown after run completes)
+                        # Result summary (shown after run)
                         summary_box = ui.column().classes("w-full mb-3")
-                        if not summary_ref[0]:
-                            summary_ref[0] = summary_box
 
-                        action_buttons = []
-
-                        # Main run button
-                        async def _main_click(k=full_run_key, sb=summary_box):
-                            replaces, downstream = ACTION_IMPACT.get(k, ("", ""))
-                            with ui.dialog() as dlg, ui.card().classes("p-5 max-w-md"):
-                                ui.label(f"Run Step {code}").classes("text-lg font-bold mb-2")
-                                ui.label(f"This will run the entire {info['title']} pipeline.").classes("text-sm text-gray-600")
-                                with ui.row().classes("items-center gap-2 mt-2"):
+                        # Run button
+                        async def _click(k=run_key):
+                            rep, down = ACTION_IMPACT.get(k, ("", ""))
+                            with ui.dialog() as dlg, ui.card().classes("p-5 max-w-sm"):
+                                ui.label(f"Run {info['title']}").classes("text-base font-semibold mb-2")
+                                with ui.row().classes("items-center gap-2"):
                                     ui.icon("schedule", size="xs").classes("text-gray-400")
-                                    ui.label(f"Estimated: {est_full(full_est_key, params)}").classes("text-sm text-gray-400")
-                                ui.label("API cost is incurred each time you run.").classes("text-xs text-gray-400 mt-1")
-                                if replaces:
+                                    ui.label(est_full(k, P)).classes("text-sm text-gray-400")
+                                ui.label("API cost is charged per run.").classes("text-xs text-gray-300 mt-1")
+                                if rep:
                                     ui.separator().classes("my-2")
                                     with ui.row().classes("items-start gap-2"):
                                         ui.icon("warning", size="xs").classes("text-orange-500 mt-0.5")
                                         with ui.column().classes("gap-0"):
-                                            ui.label(replaces).classes("text-xs text-orange-600")
-                                            if downstream:
-                                                ui.label(downstream).classes("text-xs text-orange-400 mt-1")
+                                            ui.label(rep).classes("text-xs text-orange-600")
+                                            if down:
+                                                ui.label(down).classes("text-xs text-orange-400 mt-1")
                                 with ui.row().classes("mt-4 gap-2 justify-end"):
-                                    ui.button("Cancel", on_click=dlg.close).props("flat")
+                                    ui.button("Cancel", on_click=dlg.close).props("flat no-caps size=sm")
                                     ui.button("Run", icon="play_arrow",
                                         on_click=lambda d=dlg: (d.close(), None) or asyncio.ensure_future(
-                                            run_step(k, params, status_el, indicator, log_ref[0] or ui.log(), sb, progress_bar)
-                                        )
-                                    ).props("color=indigo")
+                                            run_step(k, P, ui_refs)
+                                        )).props("unelevated no-caps size=sm color=indigo")
                             dlg.open()
 
-                        main_btn = ui.button(f"Run Step {code}", icon="play_arrow", on_click=_main_click).props("color=indigo size=md")
-                        est_label = ui.label(est_full(full_est_key, params)).classes("text-xs text-gray-400 mt-1")
-                        action_buttons.append((main_btn, full_run_key))
+                        ui.button(f"Run Step {code}", icon="play_arrow", on_click=_click).props("color=indigo size=md")
+                        ui.label(est_full(run_key, P)).classes("text-xs text-gray-400 mt-1")
 
-                        # Advanced: individual sub-steps
-                        if adv_actions:
-                            with ui.expansion("Advanced options", icon="tune").classes("w-full mt-3").props("dense"):
-                                ui.label("Run a partial step to preview results before committing to a full run.").classes("text-xs text-gray-400 mb-2")
-                                with ui.row().classes("gap-3 flex-wrap items-start"):
-                                    for lbl, icn, key, est in adv_actions:
-                                        ok, dm = check_dep(key)
-                                        with ui.column().classes("gap-1"):
-                                            async def _adv_click(k=key, sb=summary_box):
-                                                if k not in ("b_select",):
-                                                    rep, down = ACTION_IMPACT.get(k, ("", ""))
-                                                    with ui.dialog() as dlg, ui.card().classes("p-5 max-w-md"):
-                                                        ui.label(LABELS.get(k, k)).classes("text-lg font-bold mb-2")
-                                                        with ui.row().classes("items-center gap-2 mt-1"):
-                                                            ui.icon("schedule", size="xs").classes("text-gray-400")
-                                                            ui.label(f"Estimated: {est}").classes("text-sm text-gray-400")
-                                                        ui.label("API cost is incurred each time.").classes("text-xs text-gray-400 mt-1")
-                                                        if rep:
-                                                            ui.separator().classes("my-2")
-                                                            with ui.row().classes("items-start gap-2"):
-                                                                ui.icon("warning", size="xs").classes("text-orange-500 mt-0.5")
-                                                                with ui.column().classes("gap-0"):
-                                                                    ui.label(rep).classes("text-xs text-orange-600")
-                                                                    if down:
-                                                                        ui.label(down).classes("text-xs text-orange-400 mt-1")
-                                                        with ui.row().classes("mt-4 gap-2 justify-end"):
-                                                            ui.button("Cancel", on_click=dlg.close).props("flat")
-                                                            ui.button("Run", icon="play_arrow",
-                                                                on_click=lambda d=dlg: (d.close(), None) or asyncio.ensure_future(
-                                                                    run_step(k, params, status_el, indicator, log_ref[0] or ui.log(), sb, progress_bar)
-                                                                )
-                                                            ).props("color=indigo")
-                                                    dlg.open()
-                                                else:
-                                                    await run_step(k, params, status_el, indicator, log_ref[0] or ui.log(), sb, progress_bar)
+                    # Log
+                    with ui.expansion("Execution log", icon="terminal").classes("w-full text-xs text-gray-400").props("dense"):
+                        la = ui.log(max_lines=80).classes("w-full h-32 bg-gray-950 text-emerald-400 rounded-lg text-xs font-mono")
 
-                                            props = "color=indigo size=sm outline"
-                                            if not ok:
-                                                props += " disable"
-                                            b = ui.button(lbl, icon=icn, on_click=_adv_click).props(props)
-                                            if not ok:
-                                                b.tooltip(dm)
-                                            action_buttons.append((b, key))
-                                            ui.label(est).classes("est-chip")
+                    # Tick
+                    def tick(a=la, pb=progress_box, pt=run_phase_title, pd=run_phase_detail,
+                             pp=run_phase_bar, sb=summary_box):
+                        for l in state["logs"]: a.push(l)
+                        state["logs"] = []
+                        # Progress
+                        if state["running"]:
+                            pb.visible = True
+                            pt.text = f"Running Step {code}..."
+                            pn = state.get("phase_num", 0)
+                            pt2 = state.get("phase_total", 0)
+                            ph = state.get("phase", "")
+                            if pt2 > 0:
+                                pd.text = f"{pn}/{pt2}: {ph}"
+                                pp.value = pn / pt2
+                            else:
+                                pd.text = ph or "Starting..."
+                        if not state["running"] and state.get("last_run"):
+                            pb.visible = False
+                            ui_refs["status"].text = f"Done ({state['last_run']})"
+                            ui_refs["status"].classes(replace="text-xs font-medium text-emerald-600")
+                            ui_refs["indicator"].visible = False
+                            ui_refs["pbar"].visible = False
+                            # Show summary
+                            s = state.get("last_summary")
+                            if s:
+                                sb.clear()
+                                with sb:
+                                    if "error" in s:
+                                        with ui.column().classes("result-err"):
+                                            with ui.row().classes("items-center gap-2"):
+                                                ui.icon("error", size="sm").classes("text-red-500")
+                                                ui.label(f"Error: {s['error'][:100]}").classes("text-sm text-red-600")
+                                    elif "count" in s:
+                                        with ui.column().classes("result-ok gap-1"):
+                                            with ui.row().classes("items-center gap-2"):
+                                                ui.icon("check_circle", size="sm").classes("text-green-500")
+                                                ui.label(f"{s['count']} {s['label']}").classes("text-sm font-semibold text-green-700")
+                                            for pv in s.get("previews", []):
+                                                ui.label(f"  → {pv}").classes("text-xs text-gray-500 ml-5")
+                                state["last_summary"] = None
+                    ui.timer(1.0, tick)
 
-                    # Log (collapsed)
-                    with ui.expansion("Execution Log", icon="terminal").classes("w-full").props("dense"):
-                        la = ui.log(max_lines=100).classes(
-                            "w-full h-40 bg-gray-900 text-green-400 rounded-lg text-xs font-mono"
-                        )
-                        if not log_ref[0]:
-                            log_ref[0] = la
-
-                        def tick(area=la, sb=summary_box if summary_ref[0] else None, btns=action_buttons,
-                                pc=progress_card, pl=phase_label, pp=phase_progress, rt=run_title_label):
-                            for line in state["logs"]:
-                                area.push(line)
-                            state["logs"] = []
-                            # Show progress while running
-                            if state["running"]:
-                                pc.visible = True
-                                lbl = LABELS.get(state.get("step", ""), "")
-                                rt.text = f"Running {lbl}..."
-                                phase = state.get("phase", "")
-                                pnum = state.get("phase_num", 0)
-                                ptot = state.get("phase_total", 0)
-                                if ptot > 0:
-                                    pl.text = f"Phase {pnum}/{ptot}: {phase}"
-                                    pp.value = pnum / ptot
-                                else:
-                                    pl.text = phase or "Starting..."
-                                    pp.value = 0
-                            if not state["running"] and state.get("last_run"):
-                                pc.visible = False
-                                status_el.text = f"Done ({state['last_run']})"
-                                status_el.classes(replace="text-green-600 font-semibold text-sm")
-                                indicator.visible = False
-                                if progress_bar:
-                                    progress_bar.visible = False
-                                # Update button disabled states reactively
-                                for btn, key in btns:
-                                    can, _ = check_dep(key)
-                                    if can:
-                                        btn.props(remove="disable")
-                                    else:
-                                        btn.props(add="disable")
-                                # Show summary
-                                s = state.get("last_summary")
-                                if s and sb:
-                                    sb.clear()
-                                    with sb:
-                                        if "error" in s:
-                                            with ui.column().classes("summary-err p-4 gap-1"):
-                                                with ui.row().classes("items-center gap-2"):
-                                                    ui.icon("error", size="sm").classes("text-red-500")
-                                                    ui.label(f"Error: {s['error'][:100]}").classes("text-sm text-red-700")
-                                        elif "count" in s:
-                                            with ui.column().classes("summary-ok p-4 gap-2"):
-                                                with ui.row().classes("items-center gap-3"):
-                                                    ui.icon("check_circle", size="sm").classes("text-green-500")
-                                                    ui.label(f"{s['count']} {s['label']}").classes("text-sm font-semibold text-green-700")
-                                                    run_type = s.get("type", "")
-                                                    if run_type:
-                                                        ui.badge(run_type, color="grey").classes("text-xs")
-                                                previews = s.get("previews", [])
-                                                if previews:
-                                                    ui.label("Preview:").classes("text-xs text-gray-400 mt-1")
-                                                    for p in previews:
-                                                        with ui.row().classes("items-center gap-2"):
-                                                            ui.icon("chevron_right", size="xs").classes("text-green-300")
-                                                            ui.label(p).classes("text-xs text-gray-600")
-                                    state["last_summary"] = None  # show once
-                        ui.timer(1.0, tick)
-
-                    # Next step
-                    next_map = {"A1": ("b", "B — Weak Signals"), "B": ("c", "C — Unexpected"),
-                                "C": ("d", "D — Opportunity"), "D": ("results", "Download Reports")}
-                    if code in next_map:
-                        tab_key, next_label = next_map[code]
+                    # Next
+                    nx = {"A1": ("b", "B Signals"), "B": ("c", "C Unexpected"),
+                          "C": ("d", "D Opportunity"), "D": ("res", "Results")}
+                    if code in nx:
+                        tk, nl = nx[code]
                         with ui.row().classes("w-full justify-end"):
-                            ui.button(f"Next: {next_label}  →", icon="arrow_forward",
-                                on_click=lambda tk=tab_key: tabs.set_value(tk)
-                            ).props("flat color=blue")
+                            ui.button(f"Next: {nl} →", on_click=lambda t=tk: tabs.set_value(t)).props("flat no-caps size=sm color=indigo")
 
-        # ─── A1 ────────────────────────
-        make_step_tab(t1, "A1", "run_a1",
-            "Some phases are pre-computed (article summarization). This will re-run clustering, generation, and scoring.",
-            "A1 Expected",
-            [])  # No advanced actions
+        # A1
+        step_tab(t_a1, "A1", "run_a1",
+            "Article summarization is pre-computed. This re-runs clustering, generation, and scoring.")
 
-        # ─── B ─────────────────────────
-        make_step_tab(t2, "B", "run_b",
-            "Signal scoring is pre-computed. This will re-run selection and deduplication.",
-            "B Weak Signal",
-            [("Preview selection only", "visibility", "b_select", EST_TIME["b_select"])])
+        # B
+        step_tab(t_b, "B", "run_b",
+            "Signal scoring is pre-computed. This re-runs selection and deduplication.")
 
-        # ─── C (with mode comparison) ──
-        def c_extra():
-            with ui.card().classes("w-full card-s p-5"):
-                with ui.row().classes("items-center gap-2 mb-3"):
-                    ui.icon("compare", size="sm").classes("text-purple-500")
-                    ui.label("Grouping Mode Comparison").classes("text-sm font-bold text-gray-700")
+        # C
+        def c_mode_info():
+            with ui.card().classes("w-full card-s p-4"):
                 with ui.row().classes("w-full gap-4"):
-                    with ui.card().classes("flex-1 bg-purple-50 border border-purple-200 p-4"):
-                        ui.label("Cluster Mode").classes("font-bold text-purple-700 mb-1")
-                        ui.label("Groups similar signals together using AI.").classes("text-sm text-gray-600 mb-2")
-                        pros = ["Comprehensive topic coverage", "No important signal left out", "Consistent, repeatable results"]
-                        for p in pros:
-                            with ui.row().classes("items-center gap-1"):
-                                ui.icon("add", size="xs").classes("text-green-500")
-                                ui.label(p).classes("text-xs text-gray-500")
-                        with ui.row().classes("items-center gap-1 mt-1"):
-                            ui.icon("remove", size="xs").classes("text-red-400")
-                            ui.label("May miss cross-domain creative connections").classes("text-xs text-gray-500")
+                    with ui.card().classes("flex-1 bg-gray-50 p-3"):
+                        ui.label("Cluster mode").classes("text-sm font-semibold text-gray-700 mb-1")
+                        ui.label("Groups similar signals. Complete coverage, consistent results.").classes("text-xs text-gray-400")
+                    with ui.card().classes("flex-1 bg-gray-50 p-3"):
+                        ui.label("Random mode").classes("text-sm font-semibold text-gray-700 mb-1")
+                        ui.label("Mixes signals randomly. Forces creative cross-domain leaps.").classes("text-xs text-gray-400")
+                ui.label("Set the mode in Setup → C settings.").classes("text-xs text-gray-300 mt-2")
 
-                    with ui.card().classes("flex-1 bg-amber-50 border border-amber-200 p-4"):
-                        ui.label("Random Mode").classes("font-bold text-amber-700 mb-1")
-                        ui.label("Randomly mixes signals from different areas.").classes("text-sm text-gray-600 mb-2")
-                        pros = ["Forces unexpected combinations", "Mimics human brainstorming leaps", "Different results each run"]
-                        for p in pros:
-                            with ui.row().classes("items-center gap-1"):
-                                ui.icon("add", size="xs").classes("text-green-500")
-                                ui.label(p).classes("text-xs text-gray-500")
-                        with ui.row().classes("items-center gap-1 mt-1"):
-                            ui.icon("remove", size="xs").classes("text-red-400")
-                            ui.label("Some combinations may not produce useful scenarios").classes("text-xs text-gray-500")
+        step_tab(t_c, "C", "run_c", extra=c_mode_info)
 
-        make_step_tab(t3, "C", "run_c",
-            None, "C Unexpected",
-            [("Regroup only", "hub", "c_cluster", EST_TIME["c_cluster"])],
-            extra_content=c_extra)
+        # D
+        step_tab(t_d, "D", "run_d")
 
-        # ─── D ─────────────────────────
-        make_step_tab(t4, "D", "run_d",
-            None, "D Opportunity",
-            [])  # No advanced actions
+        # ═══ RESULTS ═══
+        with ui.tab_panel(t_res):
+            with ui.column().classes("w-full max-w-3xl mx-auto py-6 gap-5"):
+                ui.label("Results").classes("text-xl font-semibold text-gray-800")
+                ui.label("Download your generated reports.").classes("text-sm text-gray-400 -mt-3")
 
-        # ══════════════════════════════════
-        #  RESULTS
-        # ══════════════════════════════════
-        with ui.tab_panel(t5):
-            with ui.column().classes("w-full max-w-4xl mx-auto py-6 gap-5"):
-                with ui.row().classes("items-center gap-3 mb-2"):
-                    ui.icon("download", size="lg").classes("text-teal-500")
-                    ui.label("Download Reports").classes("text-2xl font-bold text-gray-800")
-                ui.label("Your generated scenario reports.").classes("text-sm text-gray-400 mb-2")
-
-                results_box = ui.column().classes("w-full gap-3")
-                show_all = {"value": False}
+                rbox = ui.column().classes("w-full gap-3")
+                show_all = {"v": False}
 
                 def refresh():
-                    results_box.clear()
+                    rbox.clear()
                     od = cfg.OUTPUT_DIR
-                    imd = cfg.INTERMEDIATE_DIR
-                    files = []
+                    fs = []
                     if od.exists():
-                        if show_all["value"]:
-                            files = [f for f in sorted(od.iterdir()) if f.suffix in (".pptx", ".xlsx", ".json")]
+                        if show_all["v"]:
+                            fs = [f for f in sorted(od.iterdir()) if f.suffix in (".pptx", ".xlsx", ".json")]
                         else:
-                            files = [f for f in sorted(od.iterdir()) if f.suffix in (".pptx", ".xlsx")]
-                    if not files:
-                        with results_box:
-                            with ui.card().classes("w-full card-s text-center py-16"):
-                                ui.icon("inbox", size="3rem").classes("text-gray-200 mb-3")
-                                ui.label("No reports yet").classes("text-lg text-gray-400")
-                                ui.label("Run the pipeline steps to generate reports.").classes("text-sm text-gray-300")
+                            fs = [f for f in sorted(od.iterdir()) if f.suffix in (".pptx", ".xlsx")]
+                    if not fs:
+                        with rbox:
+                            with ui.column().classes("w-full items-center py-16"):
+                                ui.icon("inbox", size="2rem").classes("text-gray-200 mb-2")
+                                ui.label("No reports yet").classes("text-sm text-gray-400")
                         return
-
-                    reports = [f for f in files if f.suffix == ".pptx"]
-                    data_files = [f for f in files if f.suffix in (".xlsx", ".json")]
-
-                    with results_box:
-                        if reports:
+                    pptx = [f for f in fs if f.suffix == ".pptx"]
+                    other = [f for f in fs if f.suffix != ".pptx"]
+                    with rbox:
+                        if pptx:
                             with ui.card().classes("w-full card-s p-5"):
-                                with ui.row().classes("items-center gap-2 mb-3"):
-                                    ui.icon("slideshow", size="sm").classes("text-red-500")
-                                    ui.label("Presentation Reports").classes("font-bold text-gray-700")
-                                for f in reports:
+                                ui.label("Reports").classes("text-sm font-semibold text-gray-600 mb-2")
+                                for f in pptx:
                                     kb = f.stat().st_size / 1024
-                                    with ui.row().classes("w-full items-center gap-3 py-2 px-3 rounded-lg hover:bg-gray-50"):
-                                        ui.badge("PPTX", color="red").classes("text-white text-xs")
+                                    with ui.row().classes("w-full items-center py-2"):
+                                        ui.icon("slideshow", size="xs").classes("text-red-400")
                                         ui.label(f.name).classes("text-sm text-gray-700 flex-grow")
-                                        ui.label(f"{kb:,.0f} KB").classes("text-xs text-gray-400")
+                                        ui.label(f"{kb:,.0f} KB").classes("text-xs text-gray-300")
                                         ui.button("Download", icon="download",
                                             on_click=lambda p=f: ui.download(str(p))
-                                        ).props("color=red size=sm unelevated")
-
-                        if data_files:
+                                        ).props("unelevated no-caps size=sm color=red")
+                        if other:
                             with ui.card().classes("w-full card-s p-5"):
-                                with ui.row().classes("items-center gap-2 mb-3"):
-                                    ui.icon("table_chart", size="sm").classes("text-green-500")
-                                    ui.label("Data Exports").classes("font-bold text-gray-700")
-                                for f in data_files:
+                                ui.label("Data files").classes("text-sm font-semibold text-gray-600 mb-2")
+                                for f in other:
                                     kb = f.stat().st_size / 1024
-                                    ext = f.suffix[1:].upper()
-                                    ec = {"JSON": "blue", "XLSX": "green"}.get(ext, "gray")
-                                    with ui.row().classes("w-full items-center gap-3 py-1.5 px-3 rounded hover:bg-gray-50"):
-                                        ui.badge(ext, color=ec).classes("text-white text-xs")
-                                        ui.label(f.name).classes("text-sm text-gray-600 flex-grow font-mono")
-                                        ui.label(f"{kb:,.0f} KB").classes("text-xs text-gray-400")
-                                        ui.button(icon="download",
-                                            on_click=lambda p=f: ui.download(str(p))
-                                        ).props("flat round size=xs color=green")
+                                    with ui.row().classes("w-full items-center py-1"):
+                                        ui.label(f.suffix[1:].upper()).classes("text-xs text-gray-300 w-10 font-mono")
+                                        ui.label(f.name).classes("text-xs text-gray-500 font-mono flex-grow")
+                                        ui.label(f"{kb:,.0f} KB").classes("text-xs text-gray-300")
+                                        ui.button(icon="download", on_click=lambda p=f: ui.download(str(p))).props("flat round size=xs color=grey")
 
-                with ui.row().classes("gap-2 items-center"):
-                    ui.button("Refresh", icon="refresh", on_click=refresh).props("flat color=teal")
-                    def toggle_all():
-                        show_all["value"] = not show_all["value"]
-                        refresh()
-                    ui.button(
-                        "Show All Files" if not show_all["value"] else "Show Reports Only",
-                        icon="visibility", on_click=toggle_all
-                    ).props("flat color=gray size=sm")
+                with ui.row().classes("gap-2"):
+                    ui.button("Refresh", icon="refresh", on_click=refresh).props("flat no-caps size=sm color=grey")
+                    def _toggle():
+                        show_all["v"] = not show_all["v"]; refresh()
+                    ui.button("Show all files" if not show_all["v"] else "Reports only",
+                        icon="visibility", on_click=_toggle).props("flat no-caps size=sm color=grey")
                 refresh()
 
     h = LogHandler()
@@ -879,4 +502,4 @@ def main_page():
 
 
 if __name__ in {"__main__", "__mp_main__"}:
-    ui.run(title="JRI Pipeline V2", port=8080, reload=False)
+    ui.run(title="JRI Pipeline", port=8080, reload=False)
