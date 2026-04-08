@@ -154,46 +154,46 @@ CLIENT_PROFILE = {
 # Used by the Web UI to render controls and by apply_overrides to validate.
 
 UI_PARAMS = {
-    # Global
-    "TOPIC":        {"section": "Global", "label": "主題 Topic",          "type": "text",   "default": TOPIC},
-    "TIMEFRAME":    {"section": "Global", "label": "時間範圍 Timeframe",  "type": "text",   "default": TIMEFRAME},
-    "INDUSTRIES":   {"section": "Global", "label": "產業列表 (comma-separated)", "type": "text", "default": ", ".join(CLIENT_PROFILE["industries"])},
+    # ── Global ──
+    "TOPIC":        {"section": "Global", "label": "Research Topic", "hint": "The main theme AI will focus on.", "type": "text", "default": TOPIC, "priority": "main"},
+    "TIMEFRAME":    {"section": "Global", "label": "Time Horizon", "hint": "How far into the future to look.", "type": "text", "default": TIMEFRAME, "priority": "main"},
+    "INDUSTRIES":   {"section": "Global", "label": "Target Industries", "hint": "Comma-separated. AI will focus scenarios on these industries.", "type": "text", "default": ", ".join(CLIENT_PROFILE["industries"]), "priority": "main"},
 
-    # A1
-    "A1_GENERATE_N":                {"section": "A1 Expected", "label": "生成情境數",            "type": "number", "min": 5,  "max": 100, "default": 20},
-    "A1_SCORE_STRUCTURAL_DEPTH":    {"section": "A1 Expected", "label": "門檻: Structural Depth", "type": "number", "min": 0,  "max": 10,  "default": 5},
-    "A1_SCORE_IRREVERSIBILITY":     {"section": "A1 Expected", "label": "門檻: Irreversibility",  "type": "number", "min": 0,  "max": 10,  "default": 5},
-    "A1_SCORE_INDUSTRY_RELEVANCE":  {"section": "A1 Expected", "label": "門檻: Industry Relevance","type": "number", "min": 0,  "max": 10,  "default": 0},
-    "A1_SCORE_TOPIC_RELEVANCE":     {"section": "A1 Expected", "label": "門檻: Topic Relevance",  "type": "number", "min": 0,  "max": 10,  "default": 0},
-    "A1_SCORE_FEASIBILITY":         {"section": "A1 Expected", "label": "門檻: Feasibility",      "type": "number", "min": 0,  "max": 10,  "default": 5},
-    "A1_TOPIC_RELEVANCE_CAP":       {"section": "A1 Expected", "label": "Topic Relevance Cap 開關","type": "bool",   "default": False},
+    # ── A1 ──
+    "A1_GENERATE_N":                {"section": "A1 Expected", "label": "Number of scenarios to generate", "hint": "More = broader coverage but slower. Recommended: 20.", "type": "number", "min": 5, "max": 100, "default": 20, "priority": "main"},
+    "A1_SCORE_STRUCTURAL_DEPTH":    {"section": "A1 Expected", "label": "Min. Structural Depth", "hint": "How deeply must the scenario change industry structure? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
+    "A1_SCORE_IRREVERSIBILITY":     {"section": "A1 Expected", "label": "Min. Irreversibility", "hint": "How hard to reverse the change? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
+    "A1_SCORE_INDUSTRY_RELEVANCE":  {"section": "A1 Expected", "label": "Min. Industry Relevance", "hint": "How relevant to your industries? (0 = allow all)", "type": "number", "min": 0, "max": 10, "default": 0, "priority": "advanced"},
+    "A1_SCORE_TOPIC_RELEVANCE":     {"section": "A1 Expected", "label": "Min. Topic Relevance", "hint": "How relevant to the research topic? (0 = allow all)", "type": "number", "min": 0, "max": 10, "default": 0, "priority": "advanced"},
+    "A1_SCORE_FEASIBILITY":         {"section": "A1 Expected", "label": "Min. Feasibility", "hint": "Could this realistically happen in 10-15 years? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
+    "A1_TOPIC_RELEVANCE_CAP":       {"section": "A1 Expected", "label": "Strict topic filter", "hint": "If ON, scenarios barely related to the topic are heavily penalized.", "type": "bool", "default": False, "priority": "advanced"},
 
-    # B
-    "B_TOP_N":                      {"section": "B Weak Signal", "label": "篩選數量",              "type": "number", "min": 100, "max": 5000, "default": 2000},
-    "B_SCORE_OUTSIDE_AREA":         {"section": "B Weak Signal", "label": "門檻: Outside Area",    "type": "number", "min": 0,   "max": 10,   "default": 5},
-    "B_SCORE_NOVELTY":              {"section": "B Weak Signal", "label": "門檻: Novelty",         "type": "number", "min": 0,   "max": 10,   "default": 5},
-    "B_SCORE_SOCIAL_IMPACT":        {"section": "B Weak Signal", "label": "門檻: Social Impact",   "type": "number", "min": 0,   "max": 10,   "default": 5},
-    "B_SCORE_TOPIC_RELEVANCE":      {"section": "B Weak Signal", "label": "門檻: Topic Relevance", "type": "number", "min": 0,   "max": 10,   "default": 0},
-    "B_TOPIC_RELEVANCE_CAP":        {"section": "B Weak Signal", "label": "Topic Relevance Cap 開關","type": "bool",  "default": False},
+    # ── B ──
+    "B_TOP_N":                      {"section": "B Weak Signal", "label": "Number of signals to keep", "hint": "How many weak signals to pass to the next step. Recommended: 2000.", "type": "number", "min": 100, "max": 5000, "default": 2000, "priority": "main"},
+    "B_SCORE_OUTSIDE_AREA":         {"section": "B Weak Signal", "label": "Min. Outside Area", "hint": "Must be outside your normal research scope? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
+    "B_SCORE_NOVELTY":              {"section": "B Weak Signal", "label": "Min. Novelty", "hint": "Must be genuinely new information? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
+    "B_SCORE_SOCIAL_IMPACT":        {"section": "B Weak Signal", "label": "Min. Social Impact", "hint": "Must have potential societal impact? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
+    "B_SCORE_TOPIC_RELEVANCE":      {"section": "B Weak Signal", "label": "Min. Topic Relevance", "hint": "Must be related to the research topic? (0 = allow all)", "type": "number", "min": 0, "max": 10, "default": 0, "priority": "advanced"},
+    "B_TOPIC_RELEVANCE_CAP":        {"section": "B Weak Signal", "label": "Strict topic filter", "hint": "If ON, signals barely related to the topic are heavily penalized.", "type": "bool", "default": False, "priority": "advanced"},
 
-    # C
-    "C_GENERATE_N":                 {"section": "C Unexpected", "label": "生成情境數",             "type": "number", "min": 5,  "max": 300, "default": 150},
-    "C_MODE":                       {"section": "C Unexpected", "label": "分群模式",               "type": "select", "options": ["cluster", "random"], "default": "cluster"},
-    "C_DIVERSITY_MAX_PCT":          {"section": "C Unexpected", "label": "單一主題上限 %",          "type": "number", "min": 10, "max": 100, "default": 40},
-    "C_SCORE_UNEXPECTEDNESS":       {"section": "C Unexpected", "label": "門檻: Unexpectedness",   "type": "number", "min": 0,  "max": 10,  "default": 5},
-    "C_SCORE_SOCIAL_IMPACT":        {"section": "C Unexpected", "label": "門檻: Social Impact",    "type": "number", "min": 0,  "max": 10,  "default": 5},
-    "C_SCORE_UNCERTAINTY":          {"section": "C Unexpected", "label": "門檻: Uncertainty",      "type": "number", "min": 0,  "max": 10,  "default": 5},
+    # ── C ──
+    "C_GENERATE_N":                 {"section": "C Unexpected", "label": "Number of scenarios to generate", "hint": "More = broader coverage but slower. Recommended: 100-150.", "type": "number", "min": 5, "max": 300, "default": 150, "priority": "main"},
+    "C_MODE":                       {"section": "C Unexpected", "label": "Grouping mode", "hint": "Cluster = group similar signals. Random = mix signals from different areas for creative leaps.", "type": "select", "options": ["cluster", "random"], "default": "cluster", "priority": "main"},
+    "C_DIVERSITY_MAX_PCT":          {"section": "C Unexpected", "label": "Max % per theme", "hint": "Prevent one topic from dominating. E.g., 40 = no single theme > 40% of results.", "type": "number", "min": 10, "max": 100, "default": 40, "priority": "advanced"},
+    "C_SCORE_UNEXPECTEDNESS":       {"section": "C Unexpected", "label": "Min. Unexpectedness", "hint": "How surprising must the scenario be? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
+    "C_SCORE_SOCIAL_IMPACT":        {"section": "C Unexpected", "label": "Min. Social Impact", "hint": "Must have potential societal impact? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
+    "C_SCORE_UNCERTAINTY":          {"section": "C Unexpected", "label": "Min. Uncertainty", "hint": "Must be hard to predict? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
 
-    # D
-    "D_GENERATE_N":                 {"section": "D Opportunity", "label": "配對數量",              "type": "number", "min": 5,  "max": 100, "default": 40},
-    "D_MODE":                       {"section": "D Opportunity", "label": "配對模式",              "type": "select", "options": ["hybrid", "random"], "default": "hybrid"},
-    "D_SCORE_COLLISION":            {"section": "D Opportunity", "label": "門檻: Collision",       "type": "number", "min": 0,  "max": 10,  "default": 0},
-    "D_SCORE_UNEXPECTED":           {"section": "D Opportunity", "label": "門檻: Unexpected",      "type": "number", "min": 0,  "max": 10,  "default": 5},
-    "D_SCORE_IMPACT":               {"section": "D Opportunity", "label": "門檻: Impact",          "type": "number", "min": 0,  "max": 10,  "default": 5},
-    "D_SCORE_PLAUSIBILITY":         {"section": "D Opportunity", "label": "門檻: Plausibility",    "type": "number", "min": 0,  "max": 10,  "default": 5},
-    "D_SCORE_TOPIC_RELEVANCE":      {"section": "D Opportunity", "label": "門檻: Topic Relevance", "type": "number", "min": 0,  "max": 10,  "default": 0},
-    "D_TOPIC_RELEVANCE_CAP":        {"section": "D Opportunity", "label": "Topic Relevance Cap 開關","type": "bool",  "default": False},
-    "D_MATRIX_MODE":                {"section": "D Opportunity", "label": "矩陣分類 (Unexpectedness × Impact)","type": "bool", "default": True},
+    # ── D ──
+    "D_GENERATE_N":                 {"section": "D Opportunity", "label": "Number of pairs to generate", "hint": "How many A x C combinations to explore. Recommended: 30-40.", "type": "number", "min": 5, "max": 100, "default": 40, "priority": "main"},
+    "D_MODE":                       {"section": "D Opportunity", "label": "Pairing mode", "hint": "Hybrid = AI picks best pairs. Random = random combinations for creative exploration.", "type": "select", "options": ["hybrid", "random"], "default": "hybrid", "priority": "main"},
+    "D_MATRIX_MODE":                {"section": "D Opportunity", "label": "Matrix classification", "hint": "Classify results into Unexpectedness x Impact quadrants (Breakthrough / Surprising / Incremental).", "type": "bool", "default": True, "priority": "main"},
+    "D_SCORE_COLLISION":            {"section": "D Opportunity", "label": "Min. Collision Novelty", "hint": "How non-obvious must the A x C combination be? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 0, "priority": "advanced"},
+    "D_SCORE_UNEXPECTED":           {"section": "D Opportunity", "label": "Min. Unexpectedness", "hint": "How surprising must the opportunity be? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
+    "D_SCORE_IMPACT":               {"section": "D Opportunity", "label": "Min. Business Impact", "hint": "How big must the revenue/competitive impact be? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
+    "D_SCORE_PLAUSIBILITY":         {"section": "D Opportunity", "label": "Min. Plausibility", "hint": "Must be realistically possible in 10-15 years? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
+    "D_SCORE_TOPIC_RELEVANCE":      {"section": "D Opportunity", "label": "Min. Topic Relevance", "hint": "Must be related to the research topic? (0 = allow all)", "type": "number", "min": 0, "max": 10, "default": 0, "priority": "advanced"},
+    "D_TOPIC_RELEVANCE_CAP":        {"section": "D Opportunity", "label": "Strict topic filter", "hint": "If ON, opportunities barely related to the topic are heavily penalized.", "type": "bool", "default": False, "priority": "advanced"},
 }
 
 
