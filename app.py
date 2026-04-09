@@ -67,9 +67,11 @@ def login_page():
             password.on("keydown.enter", try_login)
 
 state = {"running": False, "step": "", "logs": [], "last_run": None,
-         "last_summary": None, "phase": "", "phase_num": 0, "phase_total": 0}
+         "last_summary": None, "phase": "", "phase_num": 0, "phase_total": 0,
+         "cancel": False, "start_time": None}
 
 LABELS = {
+    "run_all": "All Steps",
     "run_a1": "Step A1", "run_b": "Step B", "run_c": "Step C", "run_d": "Step D",
     "b_select": "B Preview",
     "c_cluster": "C Regroup",
@@ -177,7 +179,10 @@ class LogHandler(logging.Handler):
 async def run_step(key, ov, ui_refs):
     if state["running"]:
         ui.notify("Already running.", type="warning"); return
-    state.update(running=True, step=key, logs=[], last_summary=None, phase="Starting...", phase_num=0, phase_total=0)
+    import time as _time
+    state.update(running=True, step=key, logs=[], last_summary=None,
+                 phase="Starting...", phase_num=0, phase_total=0,
+                 cancel=False, start_time=_time.time())
     apply_overrides(ov)
     step_name = LABELS.get(key, key)
     ui_refs["status"].text = f"Running {step_name}..."
@@ -188,8 +193,46 @@ async def run_step(key, ov, ui_refs):
     def _run():
         def _p(name, n, t):
             state.update(phase=name, phase_num=n, phase_total=t)
+        def _check_cancel():
+            if state.get("cancel"):
+                raise InterruptedError("Cancelled by user")
         try:
-            if key == "run_a1":
+            if key == "run_all":
+                # A1
+                _p("A1: Clustering...", 1, 10)
+                _check_cancel()
+                from steps.step_a1 import phase2_cluster, phase3_generate, phase4_rank
+                themes = phase2_cluster()
+                _p("A1: Generating...", 2, 10); _check_cancel()
+                scenarios = phase3_generate(themes)
+                _p("A1: Scoring...", 3, 10); _check_cancel()
+                phase4_rank(scenarios)
+                # B
+                _p("B: Selecting...", 4, 10); _check_cancel()
+                from steps.step_b import select_top_signals, diversity_dedup
+                cands = select_top_signals()
+                _p("B: Dedup...", 5, 10); _check_cancel()
+                diversity_dedup(cands)
+                # C
+                _p("C: Grouping...", 6, 10); _check_cancel()
+                from steps.step_c import phase1_cluster, phase2_generate as c_gen, phase3_rank as c_rank
+                cl = phase1_cluster()
+                _p("C: Generating...", 7, 10); _check_cancel()
+                sc = c_gen(cl)
+                _p("C: Scoring...", 8, 10); _check_cancel()
+                c_rank(sc)
+                # D
+                _p("D: Pairing...", 9, 10); _check_cancel()
+                from steps.step_d import phase1_select_pairs, phase2_generate as d_gen, phase3_rank as d_rank
+                from utils.data_io import read_json
+                exp = read_json(cfg.OUTPUT_DIR / "A1_expected_scenarios_ja.json")
+                unexp = read_json(cfg.OUTPUT_DIR / "C_unexpected_scenarios_ja.json")
+                pairs = phase1_select_pairs(exp, unexp)
+                _p("D: Generating...", 9, 10); _check_cancel()
+                dsc = d_gen(pairs, exp, unexp)
+                _p("D: Scoring...", 10, 10); _check_cancel()
+                d_rank(dsc)
+            elif key == "run_a1":
                 from steps.step_a1 import phase2_cluster, phase3_generate, phase4_rank
                 _p("Clustering articles...", 1, 3); themes = phase2_cluster()
                 _p("Generating scenarios...", 2, 3); scenarios = phase3_generate(themes)
@@ -219,6 +262,8 @@ async def run_step(key, ov, ui_refs):
                 from steps.step_c import phase1_cluster, phase1_random
                 (phase1_random if cfg.C_MODE == "random" else phase1_cluster)()
             state["last_summary"] = build_summary(key)
+        except InterruptedError:
+            state["last_summary"] = {"error": "Cancelled by user"}
         except Exception as e:
             logger.error(f"Error: {e}", exc_info=True)
             state["last_summary"] = {"error": str(e)}
@@ -278,15 +323,17 @@ def page():
         .card-s:hover { border-color: #dcdfe3 !important; }
         .q-tab { text-transform: none !important; font-size: 13px !important; }
         .q-btn { text-transform: none !important; }
-        /* Tab accent colors */
-        .q-tab[data-tab="a1"].q-tab--active { color: #1976D2 !important; }
-        .q-tab[data-tab="a1"] .q-tab__indicator { background: #1976D2 !important; }
-        .q-tab[data-tab="b"].q-tab--active { color: #388E3C !important; }
-        .q-tab[data-tab="b"] .q-tab__indicator { background: #388E3C !important; }
-        .q-tab[data-tab="c"].q-tab--active { color: #F57C00 !important; }
-        .q-tab[data-tab="c"] .q-tab__indicator { background: #F57C00 !important; }
-        .q-tab[data-tab="d"].q-tab--active { color: #7B1FA2 !important; }
-        .q-tab[data-tab="d"] .q-tab__indicator { background: #7B1FA2 !important; }
+        /* Tab accent colors by name attribute */
+        .q-tab[name="a1"].q-tab--active { color: #1976D2 !important; }
+        .q-tab[name="a1"] .q-tab__indicator { background: #1976D2 !important; }
+        .q-tab[name="b"].q-tab--active { color: #388E3C !important; }
+        .q-tab[name="b"] .q-tab__indicator { background: #388E3C !important; }
+        .q-tab[name="c"].q-tab--active { color: #F57C00 !important; }
+        .q-tab[name="c"] .q-tab__indicator { background: #F57C00 !important; }
+        .q-tab[name="d"].q-tab--active { color: #7B1FA2 !important; }
+        .q-tab[name="d"] .q-tab__indicator { background: #7B1FA2 !important; }
+        .q-tab[name="res"].q-tab--active { color: #D32F2F !important; }
+        .q-tab[name="res"] .q-tab__indicator { background: #D32F2F !important; }
         .progress-card { background: #fffbeb; border: 1px solid #fde68a; border-radius: 12px; padding: 16px; }
         .result-ok { background: #f0fdf4; border: 1px solid #d1fae5; border-radius: 12px; padding: 16px; }
         .result-err { background: #fef2f2; border: 1px solid #fee2e2; border-radius: 12px; padding: 16px; }
@@ -380,7 +427,33 @@ def page():
                                 if i < len(STEPS) - 1:
                                     ui.separator().classes("opacity-30")
                     refresh_status()
-                    ui.button("Refresh", icon="refresh", on_click=refresh_status).props("flat no-caps size=sm color=grey").classes("mt-2")
+                    with ui.row().classes("mt-3 gap-3 items-center"):
+                        ui.button("Refresh", icon="refresh", on_click=refresh_status).props("flat no-caps size=sm color=grey")
+
+                # Run All
+                with ui.card().classes("w-full card-s p-5"):
+                    async def _run_all():
+                        total_est = est_full("run_a1", P).split("·")[0] + " (total ~30-40 min)"
+                        with ui.dialog() as dlg, ui.card().classes("p-5 max-w-md"):
+                            ui.label("Run All Steps").classes("text-lg font-semibold mb-2")
+                            ui.label("This will run all 4 steps in sequence: Expected → Signals → Unexpected → Opportunities.").classes("text-sm text-gray-600")
+                            ui.label("Estimated: ~30-40 min total").classes("text-xs text-gray-400 mt-2")
+                            ui.label("API cost is charged per run.").classes("text-xs text-gray-300 mt-1")
+                            ui.separator().classes("my-2")
+                            with ui.row().classes("items-start gap-2"):
+                                ui.icon("warning", size="xs").classes("text-orange-500 mt-0.5")
+                                ui.label("All existing results will be replaced.").classes("text-xs text-orange-600")
+                            with ui.row().classes("mt-4 gap-2 justify-end"):
+                                ui.button("Cancel", on_click=dlg.close).props("flat no-caps size=sm")
+                                async def _do_all(d=dlg):
+                                    d.close()
+                                    await run_step("run_all", P, ui_refs)
+                                ui.button("Run All", icon="rocket_launch", on_click=_do_all).props("unelevated no-caps size=sm color=indigo")
+                        dlg.open()
+
+                    with ui.row().classes("items-center gap-4"):
+                        ui.button("Run All Steps", icon="rocket_launch", on_click=_run_all).props("color=indigo size=md")
+                        ui.label("~30-40 min · Runs A1 → B → C → D in sequence").classes("text-xs text-gray-400")
 
                 # Data
                 with ui.card().classes("w-full card-s p-5"):
@@ -489,10 +562,13 @@ def page():
                             sb.clear()
 
                         if state["running"]:
+                            import time as _t
                             ph = state.get("phase", "")
                             pn = state.get("phase_num", 0)
                             pt = state.get("phase_total", 0)
-                            key = f"r:{pn}:{ph}"
+                            elapsed = int(_t.time() - state.get("start_time", _t.time()))
+                            elapsed_str = f"{elapsed // 60}:{elapsed % 60:02d}"
+                            key = f"r:{pn}:{ph}:{elapsed // 5}"  # update every 5 sec
                             if key != _prev_key["v"]:
                                 _prev_key["v"] = key
                                 sb.clear()
@@ -506,6 +582,12 @@ def page():
                                             ui.linear_progress(value=pn/pt, show_value=False).classes("w-full mt-1").props("color=amber rounded size=8px")
                                         else:
                                             ui.label(ph or "Starting...").classes("text-xs text-amber-600 mt-1")
+                                        with ui.row().classes("mt-2 items-center justify-between"):
+                                            ui.label(f"Elapsed: {elapsed_str}").classes("text-xs text-amber-500")
+                                            def _cancel():
+                                                state["cancel"] = True
+                                                ui.notify("Cancelling after current phase...", type="warning")
+                                            ui.button("Cancel", icon="stop", on_click=_cancel).props("flat no-caps size=xs color=orange")
 
                         elif state.get("last_run"):
                             ui_refs["status"].text = f"Done ({state['last_run']})"
