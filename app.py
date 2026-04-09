@@ -3,15 +3,68 @@ JRI Pipeline V2 — Web UI
 """
 import asyncio
 import logging
+import os
 from datetime import datetime
 
-from nicegui import ui
+from nicegui import ui, app
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import RedirectResponse
 
 import config as cfg
 from config import UI_PARAMS, apply_overrides
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
+
+# ─── Auth ───────────────────────────────────────────
+# Set credentials via environment variables or defaults
+AUTH_USERS = {
+    os.getenv("APP_USER", "jri"): os.getenv("APP_PASS", "livinglab2026"),
+}
+UNRESTRICTED = {"/login"}
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if not app.storage.user.get("authenticated", False):
+            if request.url.path in UNRESTRICTED or request.url.path.startswith("/_nicegui"):
+                return await call_next(request)
+            app.storage.user["referrer_path"] = request.url.path
+            return RedirectResponse("/login")
+        return await call_next(request)
+
+
+app.add_middleware(AuthMiddleware)
+
+
+@ui.page("/login")
+def login_page():
+    ui.add_head_html("""<style>
+        body { background: #f7f8fa; }
+    </style>""")
+    with ui.column().classes("absolute-center items-center gap-4"):
+        with ui.column().classes("items-center gap-1 mb-4"):
+            ui.label("JRI").classes("text-sm font-bold text-indigo-600 bg-indigo-50 px-3 py-1 rounded")
+            ui.label("Living Lab+ Pipeline").classes("text-lg font-semibold text-gray-700")
+        with ui.card().classes("w-80 p-6").style("border-radius: 14px; border: 1px solid #ebedf0"):
+            username = ui.input("Username").classes("w-full").props("outlined dense")
+            password = ui.input("Password", password=True, password_toggle_button=True).classes("w-full").props("outlined dense")
+            error_label = ui.label("").classes("text-xs text-red-500")
+
+            async def try_login():
+                u = username.value.strip()
+                p = password.value
+                if u in AUTH_USERS and AUTH_USERS[u] == p:
+                    app.storage.user["authenticated"] = True
+                    app.storage.user["username"] = u
+                    target = app.storage.user.get("referrer_path", "/")
+                    ui.navigate.to(target)
+                else:
+                    error_label.text = "Invalid username or password"
+
+            ui.button("Sign in", icon="login", on_click=try_login).classes("w-full mt-2").props("unelevated no-caps color=indigo")
+            password.on("keydown.enter", try_login)
 
 state = {"running": False, "step": "", "logs": [], "last_run": None,
          "last_summary": None, "phase": "", "phase_num": 0, "phase_total": 0}
@@ -226,6 +279,11 @@ def page():
                 ui_refs["indicator"] = ui.spinner("dots", size="xs", color="amber")
                 ui_refs["indicator"].visible = False
                 ui_refs["status"] = ui.label("Ready").classes("text-xs font-medium text-emerald-600")
+                ui.separator().props("vertical").classes("h-4")
+                def logout():
+                    app.storage.user.clear()
+                    ui.navigate.to("/login")
+                ui.button(icon="logout", on_click=logout).props("flat round size=xs color=grey").tooltip("Sign out")
         ui_refs["pbar"] = ui.linear_progress(show_value=False).classes("w-full").props("indeterminate color=amber size=2px")
         ui_refs["pbar"].visible = False
 
@@ -502,4 +560,9 @@ def page():
 
 
 if __name__ in {"__main__", "__mp_main__"}:
-    ui.run(title="JRI Pipeline", port=8080, reload=False)
+    ui.run(
+        title="JRI Pipeline",
+        port=8080,
+        reload=False,
+        storage_secret=os.getenv("STORAGE_SECRET", "jri-pipeline-secret-2026"),
+    )
