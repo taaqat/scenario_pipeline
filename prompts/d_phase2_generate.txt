@@ -35,27 +35,25 @@ The following industries are the focus of this analysis. When writing implicatio
 ## Opportunity Scenario Title
 - Write ONE self-explanatory sentence that tells WHAT the opportunity is and WHY it emerges.
 - Structure: Cause/trigger -> resulting business opportunity (in one sentence).
-- Length: under 40 Japanese characters.
+- Length: under 40 characters.
 - The title MUST match the core mechanism in the content. If content is about toilets, mention toilets.
-- Good: "高齢者が廃村を買い取り、集落発注市場が生まれる"
-- Good: "在宅センサーが孤立を検知し、関係処方の市場が開く"
-- Bad: "マニラのオペレーターが日本の50世帯を毎朝起こす" (reader cannot tell the opportunity)
-- Bad: title-content mismatch (title says "血圧" but content is about toilets)
+- Bad: title that is cryptic/metaphorical and requires reading the body to understand the opportunity
+- Bad: title-content mismatch (title says one thing but content is about something else)
 
 ## Collision Insight
 - What becomes visible ONLY when these two forces (A and C) intersect?
-- Write 4-6 sentences (200-350 Japanese characters).
+- Write 4-6 sentences (200-350 characters).
 - Keep a simple flow: A trend -> C disruption -> emergent collision insight -> business opportunity.
 - The paragraph must make the title feel inevitable.
 - (This field is used internally to anchor the narrative. It does not appear on the client's presentation slide.)
 
 ## Background
 - What's the bigger picture or environment where this opportunity arises?
-- A descriptive paragraph of 250-400 Japanese characters, or 2-4 key background factors with explanations.
+- A descriptive paragraph of 250-400 characters, or 2-4 key background factors with explanations.
 
 ## About the Future / Post-Change Scenario
 - If we seize this opportunity, what will the future look like? What new things or ways of doing things will there be?
-- A descriptive paragraph of 400-600 Japanese characters, focusing on core changes and value.
+- A descriptive paragraph of 400-600 characters, focusing on core changes and value.
 
 ## Implications for the Company
 - What are the benefits for our company (or clients)? Can we make money? What changes are needed?
@@ -99,41 +97,34 @@ When creating this opportunity, you may reference additional Expected (A) and/or
 # OUTPUT RULES
 - Respond ONLY with valid JSON. No markdown code fences, no preamble, no explanation.
 - Strictly respect all word count limits specified in the schema.
-- 日本語の文章品質は最優先事項。以下を違反した文は書き直してから出力すること：
-  - 一文は60字以内。読点（、）3つ以上の文は必ず分割する。
-  - 漢字4字以上の連続禁止（例：「高齢者支援型統合ケア基盤」→「高齢者を支える統合的なケア基盤」）。
-  - 「〜化」「〜的」の安易な連続使用禁止。具体的な動詞で書き換える。
-  - 主語（誰が・何が）を省略しない。
-  - 数値は半角アラビア数字（×二千 → ○2,000）。
-  - 英語の直訳調の日本語は禁止。ワークショップ参加者が一読で理解できる自然な日本語で書く。
 
 # Output — respond ONLY with JSON, no other text
-ALL text fields in Japanese (_ja) only.
+ALL text fields MUST be written in {output_language}. The _ja suffix in field names is a naming convention only.
 ```json
 {{
   "scenario_id": "D-{index}",
-  "opportunity_title_ja": "自己完結した1文タイトル（40字以内、原因→機会）",
-  "selected_expected": [{{"id": "A-X", "title": "title of expected scenario (Japanese)"}}],
-  "selected_unexpected": [{{"id": "C-Y", "title": "title of unexpected scenario (Japanese)"}}],
-  "collision_insight_ja": "A→C→衝突→商機を示す説明（4-6文、200-350字）",
-  "background_ja": "The bigger picture (250-400 Japanese characters)",
-  "about_the_future_ja": "What the future looks like if this opportunity is seized (400-600 Japanese characters)",
+  "opportunity_title_ja": "Self-explanatory one-sentence title (under 40 chars, cause→opportunity, in {output_language})",
+  "selected_expected": [{{"id": "A-X", "title": "title of expected scenario"}}],
+  "selected_unexpected": [{{"id": "C-Y", "title": "title of unexpected scenario"}}],
+  "collision_insight_ja": "A→C→collision→opportunity explanation (4-6 sentences, 200-350 chars, in {output_language})",
+  "background_ja": "The bigger picture (250-400 chars, in {output_language})",
+  "about_the_future_ja": "What the future looks like if this opportunity is seized (400-600 chars, in {output_language})",
   "implications_for_company_ja": [
-    "[Opportunity][IndustryA] benefit (2-3 sentences with concrete mechanisms, Japanese)",
-    "[Challenge][IndustryA] risk (2-3 sentences, Japanese)",
-    "[Opportunity][IndustryB] benefit (2-3 sentences, Japanese)",
-    "[Challenge][IndustryB] risk (2-3 sentences, Japanese)",
-    "[Opportunity][IndustryC] benefit (if 3rd industry, Japanese)",
-    "[Challenge][IndustryC] risk (if 3rd industry, Japanese)"
+    "[Opportunity][IndustryA] benefit (2-3 sentences with concrete mechanisms)",
+    "[Challenge][IndustryA] risk (2-3 sentences)",
+    "[Opportunity][IndustryB] benefit (2-3 sentences)",
+    "[Challenge][IndustryB] risk (2-3 sentences)",
+    "[Opportunity][IndustryC] benefit (if 3rd industry)",
+    "[Challenge][IndustryC] risk (if 3rd industry)"
   ],
   "company_approach_ja": [
-    "[IndustryA] **Overall Action Title**\n1. Sub-measure: goal + steps (Japanese)\n2. Sub-measure: goal + steps\n3. Sub-measure: goal + steps",
+    "[IndustryA] **Overall Action Title**\n1. Sub-measure: goal + steps\n2. Sub-measure: goal + steps\n3. Sub-measure: goal + steps",
     "[IndustryB] **Overall Action Title**\n1. Sub-measure: ...\n2. Sub-measure: ...\n3. Sub-measure: ...",
     "[IndustryC] **Overall Action Title** (if 3rd industry)\n1. ...\n2. ...\n3. ..."
   ],
   "transformation_points_ja": [
-    "[IndustryA] 1. Area: description  2. Area: description  3. Area: description (Japanese)",
-    "[IndustryB] 1. Area: ...  2. Area: ... (Japanese)",
+    "[IndustryA] 1. Area: description  2. Area: description  3. Area: description",
+    "[IndustryB] 1. Area: ...  2. Area: ... ",
     "[IndustryC] 1. Area: ...  2. Area: ... (if 3rd industry)"
   ]
 }}
@@ -177,5 +168,5 @@ Do NOT write these fields independently. Ensure the industries and themes flow l
 - One idea per sentence. No run-on sentences. CEO briefing style.
 
 ## Language Purity
-- ALL _ja fields must be 100% Japanese. No English words or phrases. Use katakana for foreign concepts with no Japanese equivalent.
+- ALL _ja fields must be 100% in {output_language}. The _ja suffix is a field naming convention only — write in the specified language.
 

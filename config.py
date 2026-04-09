@@ -150,6 +150,7 @@ def load_topic_config(config_path: str = None):
     # Apply topic-specific settings
     cfg_module.TOPIC = tc.TOPIC
     cfg_module.TIMEFRAME = tc.TIMEFRAME
+    cfg_module.OUTPUT_LANGUAGE = getattr(tc, "OUTPUT_LANGUAGE", "日本語")
     cfg_module.CLIENT_PROFILE = tc.CLIENT_PROFILE
     cfg_module.A1_INPUT_FILE = INPUT_DIR / tc.A1_INPUT_FILE
     cfg_module.B_INPUT_FILE = INPUT_DIR / tc.B_INPUT_FILE
@@ -160,16 +161,26 @@ def load_topic_config(config_path: str = None):
     cfg_module.C_GENERATE_N = 5 if SMOKE_TEST else tc.C_GENERATE_N
     cfg_module.D_GENERATE_N = 5 if SMOKE_TEST else tc.D_GENERATE_N
 
-    # Build writing style from topic examples
-    cfg_module.WRITING_STYLE = _build_writing_style(
-        tc.WRITING_STYLE_GOOD_EXAMPLE,
-        tc.WRITING_STYLE_BAD_EXAMPLE,
-        tc.JARGON_EXAMPLE_BEFORE,
-        tc.JARGON_EXAMPLE_AFTER,
-    )
+    # Output subdirectory (each topic gets its own output folder)
+    output_subdir = getattr(tc, "OUTPUT_SUBDIR", None)
+    if output_subdir:
+        cfg_module.OUTPUT_DIR = DATA_DIR / "output" / output_subdir
+        cfg_module.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Writing style: use topic's override if provided, otherwise build from examples
+    if hasattr(tc, "WRITING_STYLE") and tc.WRITING_STYLE:
+        cfg_module.WRITING_STYLE = tc.WRITING_STYLE
+    else:
+        cfg_module.WRITING_STYLE = _build_writing_style(
+            tc.WRITING_STYLE_GOOD_EXAMPLE,
+            tc.WRITING_STYLE_BAD_EXAMPLE,
+            tc.JARGON_EXAMPLE_BEFORE,
+            tc.JARGON_EXAMPLE_AFTER,
+        )
 
     print(f"[config] Loaded topic: {tc.TOPIC}")
     print(f"[config] Client: {tc.CLIENT_PROFILE['name']}")
+    print(f"[config] Output: {cfg_module.OUTPUT_DIR}")
     print(f"[config] A1 input: {cfg_module.A1_INPUT_FILE.name}")
     print(f"[config] B input: {cfg_module.B_INPUT_FILE.name}")
 

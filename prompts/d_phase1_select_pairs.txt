@@ -46,7 +46,7 @@ The best collisions are NOT obvious sums of A + C. They are surprising but REALI
       "pair_id": 1,
       "expected_ids": ["A-1"],
       "unexpected_ids": ["C-5", "C-12"],
-      "collision_hypothesis_ja": "Why this collision creates a real business opportunity in 10-15 years (1-2 sentences, Japanese)"
+      "collision_hypothesis_ja": "Why this collision creates a real business opportunity in 10-15 years (1-2 sentences, in {output_language})"
     }},
     {{
       "pair_id": 2,

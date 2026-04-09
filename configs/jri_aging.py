@@ -7,8 +7,10 @@ from pathlib import Path
 # ─── Project Context ─────────────────────────────────
 TOPIC = "Aging Society（高齢化社会）"
 TIMEFRAME = "Next 10-15 years"
+OUTPUT_LANGUAGE = "日本語"
 
 # ─── Input Files ─────────────────────────────────────
+OUTPUT_SUBDIR = "jri_aging"
 A1_INPUT_FILE = "日本 JRI aging 7240 rows.xlsx"
 B_INPUT_FILE = "Weak signals 2026-02-25_073946.xlsx"
 

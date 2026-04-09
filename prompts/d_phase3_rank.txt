@@ -43,9 +43,9 @@ You are a quality evaluator for Opportunity Scenario reports. Score each candida
 - Check title-content coherence: if the title describes something different from the actual collision insight and content, deduct from collision_score.
 - Check title self-explanatory quality: the title must be a self-explanatory sentence where the reader can understand the business opportunity WITHOUT reading the body. If the title is cryptic, metaphorical, or requires reading the collision_insight to make sense, deduct 1-2 points from collision_score.
 
-# Quality Note — 日本語の明瞭さ（参考情報、スコアには影響しない）
-After scoring, note any Japanese writing issues in ranking_note_ja for downstream review. Do NOT deduct points for writing quality — score purely on the 5 dimensions above.
-Issues to flag: cryptic/metaphorical titles that require body text to understand, abstract jargon titles, sentences over 60 chars, kanji chains without particles, vague intensifiers, incoherent implications/approach/transformation, title-content mismatch.
+# Quality Note — Writing Clarity (reference only, does NOT affect score)
+After scoring, note any writing quality issues in ranking_note_ja for downstream review. Do NOT deduct points for writing quality — score purely on the 5 dimensions above.
+Issues to flag: cryptic/metaphorical titles that require body text to understand, abstract jargon titles, overly long sentences, noun chains without particles, vague intensifiers, incoherent implications/approach/transformation, title-content mismatch.
 
 # Output — respond ONLY with a JSON object containing a "rankings" array, no other text
 ```json
@@ -61,7 +61,7 @@ Issues to flag: cryptic/metaphorical titles that require body text to understand
             "topic_relevance_score": 8
       }},
       "total_score": 39,
-      "ranking_note_ja": "スコアの根拠（1-2文、日本語）"
+      "ranking_note_ja": "Scoring rationale (1-2 sentences, in {output_language})"
     }}
   ]
 }}
@@ -73,7 +73,7 @@ Issues to flag: cryptic/metaphorical titles that require body text to understand
 - If plausibility_score < 4, the opportunity is too fantastical — total score should be low
 - If topic_relevance_score < 4, the opportunity is off-topic — total score should be low
 - Evaluate based on the scenario content, not just the title
-- ranking_note_ja MUST be 100% Japanese. Do NOT include any English words or phrases.
+- ranking_note_ja MUST be in {output_language}.
 
 # Scenario Summaries to Evaluate
 {scenarios}

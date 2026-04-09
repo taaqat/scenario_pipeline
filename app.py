@@ -153,7 +153,10 @@ def build_summary(step_key):
 
 class LogHandler(logging.Handler):
     def emit(self, record):
-        state["logs"].append(self.format(record))
+        msg = self.format(record)
+        # Strip local paths from log output
+        msg = msg.replace(str(cfg.BASE_DIR) + "/", "").replace(str(cfg.BASE_DIR), "")
+        state["logs"].append(msg)
         if len(state["logs"]) > 300:
             state["logs"] = state["logs"][-300:]
 
@@ -292,71 +295,80 @@ def page():
         "active-color=indigo indicator-color=indigo dense no-caps align=left"
     ) as tabs:
         t_setup = ui.tab("setup", label="Setup", icon="settings")
-        t_a1 = ui.tab("a1", label="A1 Expected", icon="article")
-        t_b = ui.tab("b", label="B Signals", icon="sensors")
-        t_c = ui.tab("c", label="C Unexpected", icon="bolt")
-        t_d = ui.tab("d", label="D Opportunity", icon="lightbulb")
+        t_a1 = ui.tab("a1", label="Expected", icon="article")
+        t_b = ui.tab("b", label="Signals", icon="sensors")
+        t_c = ui.tab("c", label="Unexpected", icon="bolt")
+        t_d = ui.tab("d", label="Opportunities", icon="lightbulb")
         t_res = ui.tab("res", label="Results", icon="download")
 
     with ui.tab_panels(tabs, value=t_setup).classes("w-full flex-grow bg-transparent"):
 
         # ═══ SETUP ═══
         with ui.tab_panel(t_setup):
+          with ui.scroll_area().classes("w-full"):
             with ui.column().classes("w-full max-w-3xl mx-auto py-6 gap-5"):
                 ui.label("Setup").classes("text-xl font-semibold text-gray-800")
-                ui.label("Configure your analysis, then go to each step to run it.").classes("text-sm text-gray-400 -mt-3")
+                ui.label("Configure your data and topic. Each step has its own settings.").classes("text-sm text-gray-400 -mt-3")
 
                 # Data
                 with ui.card().classes("w-full card-s p-5"):
                     with ui.row().classes("items-center gap-2 mb-3"):
                         ui.icon("cloud_upload", size="sm").classes("text-teal-500")
                         ui.label("Data").classes("font-semibold text-gray-700")
-                    ui.label("Upload coming soon. Currently using pre-loaded datasets:").classes("text-xs text-gray-400 mb-2")
+                    ui.label("Currently using pre-loaded datasets:").classes("text-xs text-gray-400 mb-2")
                     for f in [cfg.A1_INPUT_FILE, cfg.B_INPUT_FILE]:
                         with ui.row().classes("items-center gap-2 py-1"):
                             ui.icon("description", size="xs").classes("text-gray-300")
                             ui.label(f.name).classes("text-xs text-gray-500 font-mono")
-                    with ui.row().classes("mt-2 bg-blue-50 rounded-lg px-3 py-2 items-start gap-2"):
-                        ui.icon("info", size="xs").classes("text-blue-500 mt-0.5")
-                        ui.label(
-                            "Changing the topic adjusts AI focus but uses the same data. "
-                            "To analyze a different topic, new data is needed."
-                        ).classes("text-xs text-blue-700")
 
-                # Topic & Industries
+                # Topic
                 with ui.card().classes("w-full card-s p-5"):
                     with ui.row().classes("items-center gap-2 mb-3"):
                         ui.icon("public", size="sm").classes("text-blue-500")
                         ui.label("Topic & Industries").classes("font-semibold text-gray-700")
-                    render_params("Global", P, )
+                    render_params("Global", P)
 
-                # Key settings per step
+                # Pipeline Status
                 with ui.card().classes("w-full card-s p-5"):
                     with ui.row().classes("items-center gap-2 mb-3"):
-                        ui.icon("tune", size="sm").classes("text-indigo-500")
-                        ui.label("Pipeline Settings").classes("font-semibold text-gray-700")
-
-                    for section, label, icon in [
-                        ("A1 Expected", "A1 — Expected Scenarios", "article"),
-                        ("B Weak Signal", "B — Weak Signals", "sensors"),
-                        ("C Unexpected", "C — Unexpected Scenarios", "bolt"),
-                        ("D Opportunity", "D — Opportunities", "lightbulb"),
-                    ]:
-                        with ui.expansion(label, icon=icon).classes("w-full").props("dense"):
-                            render_params(section, P)
+                        ui.icon("assessment", size="sm").classes("text-indigo-500")
+                        ui.label("Pipeline Status").classes("font-semibold text-gray-700")
+                    status_ctr = ui.column().classes("w-full gap-0")
+                    def refresh_status():
+                        status_ctr.clear()
+                        with status_ctr:
+                            for i, (code, info) in enumerate(STEPS.items()):
+                                st, det, tm = get_status(code)
+                                tab_key = code.lower() if len(code) == 1 else "a1"
+                                with ui.row().classes("w-full items-center py-3 cursor-pointer hover:bg-gray-50 rounded-lg px-2").on(
+                                    "click", lambda t=tab_key: tabs.set_value(t)
+                                ):
+                                    ui.icon(info["icon"], size="xs").classes("text-gray-400 w-6")
+                                    ui.label(info["title"]).classes("text-sm text-gray-700 flex-grow")
+                                    if st == "done":
+                                        ui.badge(det, color="green").classes("text-xs")
+                                        ui.label(tm).classes("text-xs text-gray-300 w-20 text-right")
+                                    else:
+                                        ui.badge("Not started", color="grey").classes("text-xs")
+                                    ui.icon("chevron_right", size="xs").classes("text-gray-300")
+                                if i < len(STEPS) - 1:
+                                    ui.separator().classes("opacity-30")
+                    refresh_status()
+                    ui.button("Refresh", icon="refresh", on_click=refresh_status).props("flat no-caps size=sm color=grey").classes("mt-2")
 
         # ═══ STEP TABS ═══
-        def step_tab(panel, code, run_key, note=None, extra=None):
+        def step_tab(panel, code, run_key, section, note=None, extra=None):
             info = STEPS[code]
             with ui.tab_panel(panel):
-                with ui.column().classes("w-full max-w-3xl mx-auto py-6 gap-5"):
+                with ui.scroll_area().classes("w-full"):
+                  with ui.column().classes("w-full max-w-3xl mx-auto py-6 gap-5"):
                     # Header
                     st, det, tm = get_status(code)
                     with ui.row().classes("w-full items-center justify-between"):
                         with ui.row().classes("items-center gap-3"):
                             ui.icon(info["icon"], size="sm").classes("text-gray-400")
                             with ui.column().classes("gap-0"):
-                                ui.label(f"Step {code} — {info['title']}").classes("text-lg font-semibold text-gray-800")
+                                ui.label(f"{info['title']}").classes("text-lg font-semibold text-gray-800")
                                 ui.label(info["sub"]).classes("text-xs text-gray-400")
                         if st == "done":
                             with ui.column().classes("items-end gap-0"):
@@ -373,12 +385,17 @@ def page():
                     if extra:
                         extra()
 
+                    # Settings for this step
+                    with ui.card().classes("w-full card-s p-5"):
+                        with ui.row().classes("items-center gap-2 mb-3"):
+                            ui.icon("tune", size="sm").classes("text-gray-400")
+                            ui.label("Settings").classes("font-semibold text-gray-700")
+                        render_params(section, P)
+
                     # Run card
                     with ui.card().classes("w-full card-s p-5"):
-                        # Single status area: progress during run, summary after
                         status_box = ui.column().classes("w-full mb-3")
 
-                        # Run button
                         async def _click(k=run_key):
                             rep, down = ACTION_IMPACT.get(k, ("", ""))
                             with ui.dialog() as dlg, ui.card().classes("p-5 max-w-sm"):
@@ -405,14 +422,14 @@ def page():
                                     ).props("unelevated no-caps size=sm color=indigo")
                             dlg.open()
 
-                        ui.button(f"Run Step {code}", icon="play_arrow", on_click=_click).props("color=indigo size=md")
+                        ui.button(f"Run", icon="play_arrow", on_click=_click).props("color=indigo size=md")
                         ui.label(est_full(run_key, P)).classes("text-xs text-gray-400 mt-1")
 
                     # Log
                     with ui.expansion("Execution log", icon="terminal").classes("w-full text-xs text-gray-400").props("dense"):
                         la = ui.log(max_lines=80).classes("w-full h-32 bg-gray-950 text-emerald-400 rounded-lg text-xs font-mono")
 
-                    # Tick — clear/rebuild status_box when phase changes
+                    # Tick
                     _prev_key = {"v": ""}
 
                     def tick(a=la, sb=status_box):
@@ -431,9 +448,9 @@ def page():
                                     with ui.card().classes("w-full bg-amber-50 border border-amber-200 p-4").style("border-radius:10px"):
                                         with ui.row().classes("items-center gap-3"):
                                             ui.spinner("dots", size="sm", color="amber")
-                                            ui.label(f"Running Step {code}...").classes("text-sm font-semibold text-amber-800")
+                                            ui.label(f"Running...").classes("text-sm font-semibold text-amber-800")
                                         if pt > 0:
-                                            ui.label(f"Phase {pn}/{pt}: {ph}").classes("text-xs text-amber-600 mt-2")
+                                            ui.label(f"{pn}/{pt}: {ph}").classes("text-xs text-amber-600 mt-2")
                                             ui.linear_progress(value=pn/pt, show_value=False).classes("w-full mt-1").props("color=amber rounded size=8px")
                                         else:
                                             ui.label(ph or "Starting...").classes("text-xs text-amber-600 mt-1")
@@ -464,19 +481,19 @@ def page():
                     ui.timer(1.0, tick)
 
                     # Next
-                    nx = {"A1": ("b", "B Signals"), "B": ("c", "C Unexpected"),
-                          "C": ("d", "D Opportunity"), "D": ("res", "Results")}
+                    nx = {"A1": ("b", "Weak Signals"), "B": ("c", "Unexpected Scenarios"),
+                          "C": ("d", "Opportunities"), "D": ("res", "Results")}
                     if code in nx:
                         tk, nl = nx[code]
                         with ui.row().classes("w-full justify-end"):
                             ui.button(f"Next: {nl} →", on_click=lambda t=tk: tabs.set_value(t)).props("flat no-caps size=sm color=indigo")
 
         # A1
-        step_tab(t_a1, "A1", "run_a1",
+        step_tab(t_a1, "A1", "run_a1", "A1 Expected",
             "Article summarization is pre-computed. This re-runs clustering, generation, and scoring.")
 
         # B
-        step_tab(t_b, "B", "run_b",
+        step_tab(t_b, "B", "run_b", "B Weak Signal",
             "Signal scoring is pre-computed. This re-runs selection and deduplication.")
 
         # C
@@ -489,15 +506,15 @@ def page():
                     with ui.card().classes("flex-1 bg-gray-50 p-3"):
                         ui.label("Random mode").classes("text-sm font-semibold text-gray-700 mb-1")
                         ui.label("Mixes signals randomly. Forces creative cross-domain leaps.").classes("text-xs text-gray-400")
-                ui.label("Set the mode in Setup → C settings.").classes("text-xs text-gray-300 mt-2")
 
-        step_tab(t_c, "C", "run_c", extra=c_mode_info)
+        step_tab(t_c, "C", "run_c", "C Unexpected", extra=c_mode_info)
 
         # D
-        step_tab(t_d, "D", "run_d")
+        step_tab(t_d, "D", "run_d", "D Opportunity")
 
         # ═══ RESULTS ═══
         with ui.tab_panel(t_res):
+          with ui.scroll_area().classes("w-full"):
             with ui.column().classes("w-full max-w-3xl mx-auto py-6 gap-5"):
                 ui.label("Results").classes("text-xl font-semibold text-gray-800")
                 ui.label("Download your generated reports.").classes("text-sm text-gray-400 -mt-3")
