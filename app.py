@@ -315,20 +315,10 @@ def page():
                     if extra:
                         extra()
 
-                    # Run card with built-in progress
+                    # Run card
                     with ui.card().classes("w-full card-s p-5"):
-                        # Progress (hidden until running)
-                        progress_box = ui.column().classes("w-full mb-3")
-                        progress_box.visible = False
-                        with progress_box:
-                            with ui.row().classes("items-center gap-3"):
-                                ui.spinner("dots", size="sm", color="amber")
-                                run_phase_title = ui.label("Running...").classes("text-sm font-semibold text-amber-800")
-                            run_phase_detail = ui.label("Starting...").classes("text-xs text-amber-600 mt-1")
-                            run_phase_bar = ui.linear_progress(value=0, show_value=False).classes("w-full mt-2").props("color=amber rounded size=8px")
-
-                        # Result summary (shown after run)
-                        summary_box = ui.column().classes("w-full mb-3")
+                        # Single status area: progress during run, summary after
+                        status_box = ui.column().classes("w-full mb-3")
 
                         # Run button
                         async def _click(k=run_key):
@@ -362,32 +352,40 @@ def page():
                     with ui.expansion("Execution log", icon="terminal").classes("w-full text-xs text-gray-400").props("dense"):
                         la = ui.log(max_lines=80).classes("w-full h-32 bg-gray-950 text-emerald-400 rounded-lg text-xs font-mono")
 
-                    # Tick
-                    def tick(a=la, pb=progress_box, pt=run_phase_title, pd=run_phase_detail,
-                             pp=run_phase_bar, sb=summary_box):
+                    # Tick — clear/rebuild status_box when phase changes
+                    _prev_key = {"v": ""}
+
+                    def tick(a=la, sb=status_box):
                         for l in state["logs"]: a.push(l)
                         state["logs"] = []
-                        # Progress
+
                         if state["running"]:
-                            pb.visible = True
-                            pt.text = f"Running Step {code}..."
-                            pn = state.get("phase_num", 0)
-                            pt2 = state.get("phase_total", 0)
                             ph = state.get("phase", "")
-                            if pt2 > 0:
-                                pd.text = f"{pn}/{pt2}: {ph}"
-                                pp.value = pn / pt2
-                            else:
-                                pd.text = ph or "Starting..."
-                        if not state["running"] and state.get("last_run"):
-                            pb.visible = False
+                            pn = state.get("phase_num", 0)
+                            pt = state.get("phase_total", 0)
+                            key = f"r:{pn}:{ph}"
+                            if key != _prev_key["v"]:
+                                _prev_key["v"] = key
+                                sb.clear()
+                                with sb:
+                                    with ui.card().classes("w-full bg-amber-50 border border-amber-200 p-4").style("border-radius:10px"):
+                                        with ui.row().classes("items-center gap-3"):
+                                            ui.spinner("dots", size="sm", color="amber")
+                                            ui.label(f"Running Step {code}...").classes("text-sm font-semibold text-amber-800")
+                                        if pt > 0:
+                                            ui.label(f"Phase {pn}/{pt}: {ph}").classes("text-xs text-amber-600 mt-2")
+                                            ui.linear_progress(value=pn/pt, show_value=False).classes("w-full mt-1").props("color=amber rounded size=8px")
+                                        else:
+                                            ui.label(ph or "Starting...").classes("text-xs text-amber-600 mt-1")
+
+                        elif state.get("last_run"):
                             ui_refs["status"].text = f"Done ({state['last_run']})"
                             ui_refs["status"].classes(replace="text-xs font-medium text-emerald-600")
                             ui_refs["indicator"].visible = False
                             ui_refs["pbar"].visible = False
-                            # Show summary
                             s = state.get("last_summary")
                             if s:
+                                _prev_key["v"] = ""
                                 sb.clear()
                                 with sb:
                                     if "error" in s:
@@ -401,7 +399,7 @@ def page():
                                                 ui.icon("check_circle", size="sm").classes("text-green-500")
                                                 ui.label(f"{s['count']} {s['label']}").classes("text-sm font-semibold text-green-700")
                                             for pv in s.get("previews", []):
-                                                ui.label(f"  → {pv}").classes("text-xs text-gray-500 ml-5")
+                                                ui.label(f"→ {pv}").classes("text-xs text-gray-500 ml-5")
                                 state["last_summary"] = None
                     ui.timer(1.0, tick)
 
