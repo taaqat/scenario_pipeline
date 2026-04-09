@@ -1,15 +1,15 @@
-# JRI Living Lab+ AI Scenario Pipeline
+# AI Scenario Pipeline
 
-III × JRI 未來情境分析自動化 Pipeline
+未來情境分析自動化 Pipeline — 支援多題目切換
 
 詳細流程請看 [pipeline_flow_document.md](pipeline_flow_document.md)。這份 README 只保留實作層面需要知道的現況。
 
 ## Architecture
 
 ```
-7240 articles ──→ [A-1] Summarize(Haiku) → K-Means Cluster + Label(Opus) → Generate(Opus) → Rank + Gate + Review(gpt-5.2) ──→ all passed Expected Scenarios ──┐
-                                                                                                                                                                   ├──→ [D] Pair Select(Opus) → Generate(Opus) → Rank + Gate + Review(gpt-5.2) ──→ all passed Opportunity Scenarios
-9000+ signals ──→ [B] Score(gpt-5.2) → Top 3000 → Diversity Dedup(gpt-5.2) ──→ 2000 selected signals ──→ [C] K-Means Cluster + Label(Opus) → Generate(Opus) → Rank + Gate + Review(gpt-5.2) ──→ all passed Unexpected Scenarios ──┘
+Articles ──→ [A-1] Summarize(Haiku) → K-Means Cluster + Label(Opus) → Generate(Opus) → Rank + Gate + Review(gpt-5.2) ──→ all passed Expected Scenarios ──┐
+                                                                                                                                                              ├──→ [D] Pair Select(Opus) → Generate(Opus) → Rank + Gate + Review(gpt-5.2) ──→ all passed Opportunity Scenarios
+Weak Signals ──→ [B] Score(gpt-5.2) → Top N → Diversity Dedup(gpt-5.2) ──→ selected signals ──→ [C] K-Means Cluster + Label(Opus) → Generate(Opus) → Rank + Gate + Review(gpt-5.2) ──→ all passed Unexpected Scenarios ──┘
 ```
 
 補充：
@@ -32,15 +32,27 @@ OPENAI_API_KEY=sk-...
 
 ## Data Preparation
 
-把輸入檔放進 `data/input/`，必要時可在 `config.py` 改檔名：
-- `日本 JRI aging 7240 rows.xlsx` → `A1_INPUT_FILE`
-- `Weak signals 2026-02-25_073946.xlsx` → `B_INPUT_FILE`
+把輸入檔放進 `data/input/`，檔名在 topic config 中定義。
+
+## Topic Configs
+
+用 `--config` 切換不同題目，不需要改 code：
+
+| Config | 題目 | 指令 |
+|--------|------|------|
+| `configs/jri_aging.py` | JRI 高齡化社會（預設） | `python3 run_pipeline.py` |
+| `configs/energy.py` | 電力永續 | `python3 run_pipeline.py --config configs/energy.py` |
+
+新增題目只要在 `configs/` 裡加一個新的 `.py` 檔即可。
 
 ## Usage
 
 ```bash
-# Run everything
+# Run with default topic (JRI aging)
 python3 run_pipeline.py
+
+# Run with electricity sustainability topic
+python3 run_pipeline.py --config configs/energy.py
 
 # Run individual steps
 python3 run_pipeline.py --step a1
@@ -80,27 +92,25 @@ python3 rerank.py D --no-translate
 
 ## Deliverables
 
-| Item | Count | Files |
-|------|-------|-------|
-| Expected Scenarios | All gate-passing items | `A1_expected_scenarios_ja/zh.json`, `.xlsx` |
-| Selected Weak Signals | 2000 | `B_selected_weak_signals_ja/zh.json`, `.xlsx` |
-| Unexpected Scenarios | All gate-passing items | `C_unexpected_scenarios_ja/zh.json`, `.xlsx` |
-| C scenarios referenced by D | Derived from final D output | `C_used_in_D_ja/zh.json`, `.xlsx` |
-| Opportunity Scenarios | All gate-passing items | `D_opportunity_scenarios_ja/zh.json`, `.xlsx` |
+| Item | Files |
+|------|-------|
+| Expected Scenarios | `A1_expected_scenarios_ja/zh.json`, `.xlsx` |
+| Selected Weak Signals | `B_selected_weak_signals_ja/zh.json`, `.xlsx` |
+| Unexpected Scenarios | `C_unexpected_scenarios_ja/zh.json`, `.xlsx` |
+| C scenarios referenced by D | `C_used_in_D_ja/zh.json`, `.xlsx` |
+| Opportunity Scenarios | `D_opportunity_scenarios_ja/zh.json`, `.xlsx` |
 
 ## Project Structure
 
 ```
-jri_pipeline/
-├── config.py
+scenario_pipeline/
+├── config.py               # Shared pipeline settings (models, thresholds, etc.)
+├── configs/
+│   ├── jri_aging.py        # Topic: JRI 高齡化社會
+│   └── energy.py           # Topic: 電力永續
 ├── run_pipeline.py
 ├── rerank.py
-├── generate_pptx.js
-├── package.json
-├── requirements.txt
-├── CLAUDE_CODE_GUIDE.md
-├── README.md
-├── pipeline_flow_document.md
+├── app.py                  # Web UI
 ├── prompts/
 │   ├── a1_phase1_summarize.txt
 │   ├── a1_phase2_label_themes.txt

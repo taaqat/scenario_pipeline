@@ -1,8 +1,9 @@
 """
-JRI Living Lab+ AI Scenario Pipeline — Main Runner
-===================================================
+AI Scenario Pipeline — Main Runner
+===================================
 Usage:
-    python3 run_pipeline.py              # Run all steps A→B→C→D
+    python3 run_pipeline.py                          # Run all steps A→B→C→D (default: JRI aging)
+    python3 run_pipeline.py --config configs/energy.py   # Run with electricity sustainability topic
     python3 run_pipeline.py --step a1    # Run only Step A-1
     python3 run_pipeline.py --step b     # Run only Step B
     python3 run_pipeline.py --step c     # Run only Step C
@@ -155,7 +156,9 @@ def clear_checkpoints(step: str, phase: int = None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="JRI AI Scenario Pipeline")
+    parser = argparse.ArgumentParser(description="AI Scenario Pipeline")
+    parser.add_argument("--config", type=str, default=None,
+                        help="Topic config file (e.g. configs/energy.py). Default: configs/jri_aging.py")
     parser.add_argument("--step", choices=["a1", "b", "c", "d", "all"],
                         default="all", help="Which step to run")
     parser.add_argument("--phase", type=int, default=None,
@@ -163,6 +166,10 @@ def main():
     parser.add_argument("--fresh", action="store_true",
                         help="Clear checkpoints before running (ignore previous progress)")
     args = parser.parse_args()
+
+    # Load topic config (overrides default if --config is specified)
+    if args.config:
+        cfg.load_topic_config(args.config)
 
     setup_logging()
     ensure_dirs()
