@@ -339,10 +339,12 @@ def page():
                                                 ui.label(down).classes("text-xs text-orange-400 mt-1")
                                 with ui.row().classes("mt-4 gap-2 justify-end"):
                                     ui.button("Cancel", on_click=dlg.close).props("flat no-caps size=sm")
+                                    async def _confirmed(d=dlg, k=k):
+                                        d.close()
+                                        await run_step(k, P, ui_refs)
                                     ui.button("Run", icon="play_arrow",
-                                        on_click=lambda d=dlg: (d.close(), None) or asyncio.ensure_future(
-                                            run_step(k, P, ui_refs)
-                                        )).props("unelevated no-caps size=sm color=indigo")
+                                        on_click=_confirmed
+                                    ).props("unelevated no-caps size=sm color=indigo")
                             dlg.open()
 
                         ui.button(f"Run Step {code}", icon="play_arrow", on_click=_click).props("color=indigo size=md")
