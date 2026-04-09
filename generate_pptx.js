@@ -3,9 +3,12 @@ const pptxgen = require("pptxgenjs");
 const fs = require("fs");
 const path = require("path");
 
-// ── Language parameter ────────────────────────────────────────
-const LANGS = ["zh", "ja"];
-const BASE = path.join(__dirname, "data/output");
+// ── Language & path parameter ────────────────────────────────
+// Usage: PPTX_LANGS=zh PPTX_BASE=data/output/energy node generate_pptx.js
+const LANGS = (process.env.PPTX_LANGS || "zh,ja").split(",").map(s => s.trim());
+const BASE = process.env.PPTX_BASE
+  ? path.resolve(__dirname, process.env.PPTX_BASE)
+  : path.join(__dirname, "data/output");
 
 function getMissingRequiredFiles(lang) {
   const requiredFiles = [

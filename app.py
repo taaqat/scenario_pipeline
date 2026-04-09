@@ -179,7 +179,8 @@ async def run_step(key, ov, ui_refs):
         ui.notify("Already running.", type="warning"); return
     state.update(running=True, step=key, logs=[], last_summary=None, phase="Starting...", phase_num=0, phase_total=0)
     apply_overrides(ov)
-    ui_refs["status"].text = f"Running..."
+    step_name = LABELS.get(key, key)
+    ui_refs["status"].text = f"Running {step_name}..."
     ui_refs["status"].classes(replace="text-amber-600 text-xs font-medium")
     ui_refs["indicator"].visible = True
     ui_refs["pbar"].visible = True
@@ -277,6 +278,15 @@ def page():
         .card-s:hover { border-color: #dcdfe3 !important; }
         .q-tab { text-transform: none !important; font-size: 13px !important; }
         .q-btn { text-transform: none !important; }
+        /* Tab accent colors */
+        .q-tab[data-tab="a1"].q-tab--active { color: #1976D2 !important; }
+        .q-tab[data-tab="a1"] .q-tab__indicator { background: #1976D2 !important; }
+        .q-tab[data-tab="b"].q-tab--active { color: #388E3C !important; }
+        .q-tab[data-tab="b"] .q-tab__indicator { background: #388E3C !important; }
+        .q-tab[data-tab="c"].q-tab--active { color: #F57C00 !important; }
+        .q-tab[data-tab="c"] .q-tab__indicator { background: #F57C00 !important; }
+        .q-tab[data-tab="d"].q-tab--active { color: #7B1FA2 !important; }
+        .q-tab[data-tab="d"] .q-tab__indicator { background: #7B1FA2 !important; }
         .progress-card { background: #fffbeb; border: 1px solid #fde68a; border-radius: 12px; padding: 16px; }
         .result-ok { background: #f0fdf4; border: 1px solid #d1fae5; border-radius: 12px; padding: 16px; }
         .result-err { background: #fef2f2; border: 1px solid #fee2e2; border-radius: 12px; padding: 16px; }
@@ -338,7 +348,7 @@ def page():
         TAB_MAP = {"A1": "a1", "B": "b", "C": "c", "D": "d"}
 
         with ui.tab_panel(t_setup):
-          with ui.scroll_area().classes("w-full"):
+          with ui.column().classes("w-full"):
             with ui.column().classes("w-full max-w-3xl mx-auto py-6 gap-5"):
                 ui.label("Setup").classes("text-xl font-semibold text-gray-800")
 
@@ -394,7 +404,7 @@ def page():
             color = info.get("color", "indigo")
             section = info.get("section", "")
             with ui.tab_panel(panel):
-                with ui.scroll_area().classes("w-full"):
+                with ui.column().classes("w-full"):
                   with ui.column().classes("w-full max-w-3xl mx-auto py-6 gap-5"):
                     # Header with accent color
                     st, det, tm = get_status(code)
@@ -562,7 +572,7 @@ def page():
 
         # ═══ RESULTS ═══
         with ui.tab_panel(t_res):
-          with ui.scroll_area().classes("w-full"):
+          with ui.column().classes("w-full"):
             with ui.column().classes("w-full max-w-3xl mx-auto py-6 gap-5"):
                 ui.label("Results").classes("text-xl font-semibold text-gray-800")
                 ui.label("Download your generated reports.").classes("text-sm text-gray-400 -mt-3")
@@ -588,21 +598,21 @@ def page():
                     pptx = [f for f in fs if f.suffix == ".pptx"]
                     other = [f for f in fs if f.suffix != ".pptx"]
                     with rbox:
-                        if pptx:
-                            with ui.card().classes("w-full card-s p-5"):
-                                ui.label("Reports").classes("text-sm font-semibold text-gray-600 mb-2")
-                                for f in pptx:
-                                    kb = f.stat().st_size / 1024
-                                    with ui.row().classes("w-full items-center py-2"):
-                                        ui.icon("slideshow", size="xs").classes("text-red-400")
-                                        ui.label(f.name).classes("text-sm text-gray-700 flex-grow")
-                                        ui.label(f"{kb:,.0f} KB").classes("text-xs text-gray-300")
-                                        ui.button("Download", icon="download",
-                                            on_click=lambda p=f: ui.download(str(p))
-                                        ).props("unelevated no-caps size=sm color=red")
+                        # PPTX = hero cards
+                        for f in pptx:
+                            kb = f.stat().st_size / 1024
+                            with ui.card().classes("w-full card-s p-6"):
+                                with ui.row().classes("w-full items-center gap-4"):
+                                    ui.icon("slideshow", size="lg").classes("text-red-400")
+                                    with ui.column().classes("flex-grow gap-0"):
+                                        ui.label(f.name).classes("text-base font-semibold text-gray-800")
+                                        ui.label(f"{kb:,.0f} KB").classes("text-xs text-gray-400")
+                                    ui.button("Download", icon="download",
+                                        on_click=lambda p=f: ui.download(str(p))
+                                    ).props("unelevated no-caps size=md color=red")
+                        # Data files in accordion
                         if other:
-                            with ui.card().classes("w-full card-s p-5"):
-                                ui.label("Data files").classes("text-sm font-semibold text-gray-600 mb-2")
+                            with ui.expansion(f"Data files ({len(other)})", icon="table_chart").classes("w-full").props("dense"):
                                 for f in other:
                                     kb = f.stat().st_size / 1024
                                     with ui.row().classes("w-full items-center py-1"):
