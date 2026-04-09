@@ -320,9 +320,10 @@ def phase3_rank(scenarios: list[dict] = None) -> list[dict]:
     final = enforce_gate(final, cfg.C_MIN_DIM_SCORES, step_label="C-Phase3")
 
     # Translate and save
-    oai = get_openai_client()
-    oai.set_step("C-translate")
-    final = translate_to_zh(final, oai, cfg.TRANSLATE_MODEL)
+    if getattr(cfg, "TRANSLATE_ENABLED", False):
+        oai = get_openai_client()
+        oai.set_step("C-translate")
+        final = translate_to_zh(final, oai, cfg.TRANSLATE_MODEL)
     save_split(final, cfg.OUTPUT_DIR, "C_unexpected_scenarios")
 
     df = pd.DataFrame([

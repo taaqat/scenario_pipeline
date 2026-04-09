@@ -252,8 +252,9 @@ def diversity_dedup(candidates: list[dict] = None) -> list[dict]:
     final = deduped[:cfg.B_TOP_N]
 
     # Translate and save bilingual split
-    llm.set_step("B-translate")
-    final = translate_to_zh(final, llm, cfg.TRANSLATE_MODEL, batch_size=20)
+    if getattr(cfg, "TRANSLATE_ENABLED", False):
+        llm.set_step("B-translate")
+        final = translate_to_zh(final, llm, cfg.TRANSLATE_MODEL, batch_size=20)
     save_json(final, cfg.INTERMEDIATE_DIR / "b_phase3_dedup_selected.json")
     save_split(final, cfg.OUTPUT_DIR, "B_selected_weak_signals")
 

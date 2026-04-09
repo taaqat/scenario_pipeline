@@ -45,6 +45,7 @@ B_MODEL_SCORE     = "gpt-5.2"    # B-score: 301 concurrent batches
 B_MODEL_DIVERSITY = "gpt-5.2"    # B-diversity: single large call
 RANK_MODEL        = "gpt-5.2"    # rank / select / score (A1-rank, C-rank, D-select, D-rank)
 TRANSLATE_MODEL   = "gpt-5"   # ja→zh translation (all steps) — 翻譯不需最強模型
+TRANSLATE_ENABLED = False      # Set True to translate ja→zh (adds ~10-20 min per step)
 
 # Rate limiting
 RPM_LIMIT = 50          # requests per minute (self-imposed ceiling)
@@ -186,6 +187,7 @@ UI_PARAMS = {
     "TOPIC":        {"section": "Global", "label": "Research Topic", "hint": "The main theme AI will focus on. Changing this affects scoring in all steps — re-run needed.", "type": "text", "default": TOPIC, "priority": "main"},
     "TIMEFRAME":    {"section": "Global", "label": "Time Horizon", "hint": "How far into the future to look. Changing this affects scenario generation — re-run needed.", "type": "text", "default": TIMEFRAME, "priority": "main"},
     "INDUSTRIES":   {"section": "Global", "label": "Target Industries", "hint": "Comma-separated. AI will tailor scenarios to these industries. Changing this affects all steps — re-run needed.", "type": "text", "default": ", ".join(CLIENT_PROFILE["industries"]), "priority": "main"},
+    "TRANSLATE_ENABLED": {"section": "Global", "label": "Translate to Chinese", "hint": "Translate all results from Japanese to Chinese. Adds ~10-20 min per step. OFF = Japanese only.", "type": "bool", "default": TRANSLATE_ENABLED, "priority": "main"},
 
     # ── A1 ──
     "A1_GENERATE_N":                {"section": "A1 Expected", "label": "Number of scenarios to generate", "hint": "More = broader coverage but slower. Recommended: 20.", "type": "number", "min": 5, "max": 100, "default": 20, "priority": "main"},
@@ -241,6 +243,8 @@ def apply_overrides(overrides: dict):
         elif key == "INDUSTRIES":
             industries = [s.strip() for s in val.split(",") if s.strip()]
             cfg_module.CLIENT_PROFILE["industries"] = industries
+        elif key == "TRANSLATE_ENABLED":
+            cfg_module.TRANSLATE_ENABLED = bool(val)
 
         # A1
         elif key == "A1_GENERATE_N":
