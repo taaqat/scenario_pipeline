@@ -13,7 +13,7 @@ import importlib.util
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).parent / ".env")
+load_dotenv(Path(__file__).parent / ".env", override=True)
 
 # ─── Paths ───────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
@@ -147,25 +147,29 @@ def load_topic_config(config_path: str = None):
     tc = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(tc)
 
+    # Per-topic subdirectories (input, output, intermediate) — must be set before input file paths
+    output_subdir = getattr(tc, "OUTPUT_SUBDIR", None)
+    if output_subdir:
+        cfg_module.INPUT_DIR = DATA_DIR / "input" / output_subdir
+        cfg_module.INPUT_DIR.mkdir(parents=True, exist_ok=True)
+        cfg_module.OUTPUT_DIR = DATA_DIR / "output" / output_subdir
+        cfg_module.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        cfg_module.INTERMEDIATE_DIR = DATA_DIR / "intermediate" / output_subdir
+        cfg_module.INTERMEDIATE_DIR.mkdir(parents=True, exist_ok=True)
+
     # Apply topic-specific settings
     cfg_module.TOPIC = tc.TOPIC
     cfg_module.TIMEFRAME = tc.TIMEFRAME
     cfg_module.OUTPUT_LANGUAGE = getattr(tc, "OUTPUT_LANGUAGE", "日本語")
     cfg_module.CLIENT_PROFILE = tc.CLIENT_PROFILE
-    cfg_module.A1_INPUT_FILE = INPUT_DIR / tc.A1_INPUT_FILE
-    cfg_module.B_INPUT_FILE = INPUT_DIR / tc.B_INPUT_FILE
+    cfg_module.A1_INPUT_FILE = cfg_module.INPUT_DIR / tc.A1_INPUT_FILE
+    cfg_module.B_INPUT_FILE = cfg_module.INPUT_DIR / tc.B_INPUT_FILE
 
     # Generation counts (respect SMOKE_TEST)
     cfg_module.A1_GENERATE_N = 3 if SMOKE_TEST else tc.A1_GENERATE_N
     cfg_module.B_TOP_N = 20 if SMOKE_TEST else tc.B_TOP_N
     cfg_module.C_GENERATE_N = 5 if SMOKE_TEST else tc.C_GENERATE_N
     cfg_module.D_GENERATE_N = 5 if SMOKE_TEST else tc.D_GENERATE_N
-
-    # Output subdirectory (each topic gets its own output folder)
-    output_subdir = getattr(tc, "OUTPUT_SUBDIR", None)
-    if output_subdir:
-        cfg_module.OUTPUT_DIR = DATA_DIR / "output" / output_subdir
-        cfg_module.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # Writing style: use topic's override if provided, otherwise build from examples
     if hasattr(tc, "WRITING_STYLE") and tc.WRITING_STYLE:

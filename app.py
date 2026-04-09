@@ -301,14 +301,49 @@ def page():
         t_d = ui.tab("d", label="Opportunities", icon="lightbulb")
         t_res = ui.tab("res", label="Results", icon="download")
 
+    # Scroll to top on tab change
+    tabs.on_value_change(lambda: ui.run_javascript('document.querySelector(".q-tab-panels").scrollTop = 0'))
+
     with ui.tab_panels(tabs, value=t_setup).classes("w-full flex-grow bg-transparent"):
 
         # ═══ SETUP ═══
+        # Tab key mapping (fixed — was causing wrong tab navigation)
+        TAB_MAP = {"A1": "a1", "B": "b", "C": "c", "D": "d"}
+
         with ui.tab_panel(t_setup):
           with ui.scroll_area().classes("w-full"):
             with ui.column().classes("w-full max-w-3xl mx-auto py-6 gap-5"):
                 ui.label("Setup").classes("text-xl font-semibold text-gray-800")
-                ui.label("Configure your data and topic. Each step has its own settings.").classes("text-sm text-gray-400 -mt-3")
+
+                # Pipeline Status — FIRST (most important for returning users)
+                with ui.card().classes("w-full card-s p-5"):
+                    with ui.row().classes("items-center gap-2 mb-3"):
+                        ui.icon("assessment", size="sm").classes("text-indigo-500")
+                        ui.label("Pipeline Status").classes("font-semibold text-gray-700")
+                    status_ctr = ui.column().classes("w-full gap-0")
+                    def refresh_status():
+                        status_ctr.clear()
+                        with status_ctr:
+                            for i, (code, info) in enumerate(STEPS.items()):
+                                st, det, tm = get_status(code)
+                                tk = TAB_MAP[code]
+                                with ui.row().classes("w-full items-center py-3 cursor-pointer hover:bg-gray-50 rounded-lg px-2").on(
+                                    "click", lambda t=tk: tabs.set_value(t)
+                                ):
+                                    ui.icon(info["icon"], size="xs").classes(
+                                        "text-green-500 w-6" if st == "done" else "text-gray-300 w-6"
+                                    )
+                                    ui.label(info["title"]).classes("text-sm text-gray-700 flex-grow")
+                                    if st == "done":
+                                        ui.badge(det, color="green").classes("text-xs")
+                                        ui.label(tm).classes("text-xs text-gray-300 w-20 text-right")
+                                    else:
+                                        ui.badge("Not started", color="grey").classes("text-xs")
+                                    ui.icon("chevron_right", size="xs").classes("text-gray-300")
+                                if i < len(STEPS) - 1:
+                                    ui.separator().classes("opacity-30")
+                    refresh_status()
+                    ui.button("Refresh", icon="refresh", on_click=refresh_status).props("flat no-caps size=sm color=grey").classes("mt-2")
 
                 # Data
                 with ui.card().classes("w-full card-s p-5"):
@@ -321,40 +356,10 @@ def page():
                             ui.icon("description", size="xs").classes("text-gray-300")
                             ui.label(f.name).classes("text-xs text-gray-500 font-mono")
 
-                # Topic
+                # Topic (accordion — collapsed by default)
                 with ui.card().classes("w-full card-s p-5"):
-                    with ui.row().classes("items-center gap-2 mb-3"):
-                        ui.icon("public", size="sm").classes("text-blue-500")
-                        ui.label("Topic & Industries").classes("font-semibold text-gray-700")
-                    render_params("Global", P)
-
-                # Pipeline Status
-                with ui.card().classes("w-full card-s p-5"):
-                    with ui.row().classes("items-center gap-2 mb-3"):
-                        ui.icon("assessment", size="sm").classes("text-indigo-500")
-                        ui.label("Pipeline Status").classes("font-semibold text-gray-700")
-                    status_ctr = ui.column().classes("w-full gap-0")
-                    def refresh_status():
-                        status_ctr.clear()
-                        with status_ctr:
-                            for i, (code, info) in enumerate(STEPS.items()):
-                                st, det, tm = get_status(code)
-                                tab_key = code.lower() if len(code) == 1 else "a1"
-                                with ui.row().classes("w-full items-center py-3 cursor-pointer hover:bg-gray-50 rounded-lg px-2").on(
-                                    "click", lambda t=tab_key: tabs.set_value(t)
-                                ):
-                                    ui.icon(info["icon"], size="xs").classes("text-gray-400 w-6")
-                                    ui.label(info["title"]).classes("text-sm text-gray-700 flex-grow")
-                                    if st == "done":
-                                        ui.badge(det, color="green").classes("text-xs")
-                                        ui.label(tm).classes("text-xs text-gray-300 w-20 text-right")
-                                    else:
-                                        ui.badge("Not started", color="grey").classes("text-xs")
-                                    ui.icon("chevron_right", size="xs").classes("text-gray-300")
-                                if i < len(STEPS) - 1:
-                                    ui.separator().classes("opacity-30")
-                    refresh_status()
-                    ui.button("Refresh", icon="refresh", on_click=refresh_status).props("flat no-caps size=sm color=grey").classes("mt-2")
+                    with ui.expansion("Topic & Industries", icon="public").classes("w-full").props("dense"):
+                        render_params("Global", P)
 
         # ═══ STEP TABS ═══
         def step_tab(panel, code, run_key, section, note=None, extra=None):
@@ -422,8 +427,11 @@ def page():
                                     ).props("unelevated no-caps size=sm color=indigo")
                             dlg.open()
 
-                        ui.button(f"Run", icon="play_arrow", on_click=_click).props("color=indigo size=md")
-                        ui.label(est_full(run_key, P)).classes("text-xs text-gray-400 mt-1")
+                        with ui.row().classes("items-center gap-4"):
+                            ui.button("Run", icon="play_arrow", on_click=_click).props("color=indigo size=md")
+                            with ui.column().classes("gap-0"):
+                                ui.label(est_full(run_key, P)).classes("text-xs text-gray-400")
+                        ui.label("Previous results are saved. Re-running is safe.").classes("text-xs text-gray-300 mt-2 italic")
 
                     # Log
                     with ui.expansion("Execution log", icon="terminal").classes("w-full text-xs text-gray-400").props("dense"):
@@ -435,6 +443,11 @@ def page():
                     def tick(a=la, sb=status_box):
                         for l in state["logs"]: a.push(l)
                         state["logs"] = []
+
+                        # Clear stale progress on fresh page load
+                        if not state["running"] and not state.get("last_run") and _prev_key["v"]:
+                            _prev_key["v"] = ""
+                            sb.clear()
 
                         if state["running"]:
                             ph = state.get("phase", "")
@@ -480,13 +493,20 @@ def page():
                                 state["last_summary"] = None
                     ui.timer(1.0, tick)
 
-                    # Next
-                    nx = {"A1": ("b", "Weak Signals"), "B": ("c", "Unexpected Scenarios"),
-                          "C": ("d", "Opportunities"), "D": ("res", "Results")}
-                    if code in nx:
-                        tk, nl = nx[code]
-                        with ui.row().classes("w-full justify-end"):
-                            ui.button(f"Next: {nl} →", on_click=lambda t=tk: tabs.set_value(t)).props("flat no-caps size=sm color=indigo")
+                    # ← → Navigation
+                    prev_map = {"A1": ("setup", "Setup"), "B": ("a1", "Expected"),
+                                "C": ("b", "Signals"), "D": ("c", "Unexpected")}
+                    next_map = {"A1": ("b", "Signals"), "B": ("c", "Unexpected"),
+                                "C": ("d", "Opportunities"), "D": ("res", "Results")}
+                    with ui.row().classes("w-full justify-between mt-2"):
+                        if code in prev_map:
+                            pk, pl = prev_map[code]
+                            ui.button(f"← {pl}", on_click=lambda t=pk: tabs.set_value(t)).props("flat no-caps size=sm color=grey")
+                        else:
+                            ui.label("")  # spacer
+                        if code in next_map:
+                            nk, nl = next_map[code]
+                            ui.button(f"{nl} →", on_click=lambda t=nk: tabs.set_value(t)).props("flat no-caps size=sm color=indigo")
 
         # A1
         step_tab(t_a1, "A1", "run_a1", "A1 Expected",
@@ -498,14 +518,13 @@ def page():
 
         # C
         def c_mode_info():
-            with ui.card().classes("w-full card-s p-4"):
-                with ui.row().classes("w-full gap-4"):
-                    with ui.card().classes("flex-1 bg-gray-50 p-3"):
-                        ui.label("Cluster mode").classes("text-sm font-semibold text-gray-700 mb-1")
-                        ui.label("Groups similar signals. Complete coverage, consistent results.").classes("text-xs text-gray-400")
-                    with ui.card().classes("flex-1 bg-gray-50 p-3"):
-                        ui.label("Random mode").classes("text-sm font-semibold text-gray-700 mb-1")
-                        ui.label("Mixes signals randomly. Forces creative cross-domain leaps.").classes("text-xs text-gray-400")
+            with ui.row().classes("bg-blue-50 rounded-lg px-4 py-3 items-start gap-2"):
+                ui.icon("info", size="xs").classes("text-blue-500 mt-0.5")
+                ui.label(
+                    "Cluster mode groups similar signals for comprehensive coverage. "
+                    "Random mode mixes signals randomly for creative cross-domain leaps. "
+                    "Change the mode in Settings below."
+                ).classes("text-xs text-blue-700")
 
         step_tab(t_c, "C", "run_c", "C Unexpected", extra=c_mode_info)
 

@@ -69,7 +69,7 @@ def phase1_select_pairs(
         ensure_ascii=False, indent=1
     )
 
-    target_industries = ", ".join(cfg.CLIENT_PROFILE["industries_ja"])
+    target_industries = ", ".join(cfg.CLIENT_PROFILE.get("industries", cfg.CLIENT_PROFILE.get("industries_ja", [])))
     prompt = (prompt_tpl
               .replace("{expected_list}", expected_brief)
               .replace("{unexpected_list}", unexpected_brief)
@@ -77,7 +77,8 @@ def phase1_select_pairs(
               .replace("{max_per_a}", str(max_per_a))
               .replace("{max_per_c}", str(max_per_c))
               .replace("{min_unique_c}", str(min_unique_c))
-              .replace("{target_industries}", target_industries))
+              .replace("{target_industries}", target_industries)
+              .replace("{output_language}", cfg.OUTPUT_LANGUAGE))
 
     # Try up to 2 times — LLM sometimes returns error analysis instead of pairs
     pairs = None
@@ -371,6 +372,7 @@ def phase2_generate(
         if not a_data or not c_data:
             logger.error(f"  Pair {idx}: EMPTY context (a_data={len(a_data)}, c_data={len(c_data)}) — output quality will be degraded")
 
+        industries = cfg.CLIENT_PROFILE.get("industries", cfg.CLIENT_PROFILE.get("industries_ja", []))
         return (prompt_tpl
                 .replace("{writing_style}", cfg.WRITING_STYLE)
                 .replace("{expected}", json.dumps(a_data, ensure_ascii=False, indent=1))
@@ -381,7 +383,8 @@ def phase2_generate(
                          pair.get("collision_hypothesis_ja", "")
                          or "（No pre-hypothesis — analyze the A×C pair and identify the collision yourself.）")
                 .replace("{target_industries_ja}",
-                         ", ".join(f"[{x}]" for x in cfg.CLIENT_PROFILE["industries_ja"]))
+                         ", ".join(f"[{x}]" for x in industries))
+                .replace("{output_language}", cfg.OUTPUT_LANGUAGE)
                 .replace("{index}", str(pair.get("pair_id", idx + 1))))
 
     def on_done(flat_idx, result):
@@ -591,7 +594,8 @@ def phase3_rank(scenarios: list[dict] = None) -> list[dict]:
         summary_fn=d_summary_fn,
         prompt_vars={
             "topic": cfg.TOPIC,
-            "target_industries": ", ".join(cfg.CLIENT_PROFILE["industries_ja"]),
+            "target_industries": ", ".join(cfg.CLIENT_PROFILE.get("industries", cfg.CLIENT_PROFILE.get("industries_ja", []))),
+            "output_language": cfg.OUTPUT_LANGUAGE,
         },
         step_label="D-Phase3",
         min_dim_scores=cfg.D_MIN_DIM_SCORES,
@@ -604,7 +608,8 @@ def phase3_rank(scenarios: list[dict] = None) -> list[dict]:
         summary_fn=d_summary_fn,
         prompt_vars={
             "topic": cfg.TOPIC,
-            "target_industries": ", ".join(cfg.CLIENT_PROFILE["industries_ja"]),
+            "target_industries": ", ".join(cfg.CLIENT_PROFILE.get("industries", cfg.CLIENT_PROFILE.get("industries_ja", []))),
+            "output_language": cfg.OUTPUT_LANGUAGE,
         },
         step_label="D-Phase3",
     )
