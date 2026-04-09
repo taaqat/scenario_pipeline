@@ -89,22 +89,35 @@ ACTION_IMPACT = {
 STEPS = {
     "A1": {"icon": "article", "title": "Expected Scenarios",
            "sub": "Structural changes from news articles",
-           "output": "A1_expected_scenarios_ja.json", "check": "a1_phase3_scenarios.json"},
+           "output": "A1_expected_scenarios_ja.json", "check": "a1_phase3_scenarios.json",
+           "color": "blue", "section": "A1 Expected"},
     "B":  {"icon": "sensors", "title": "Weak Signals",
            "sub": "Scored and filtered signals",
-           "output": "B_selected_weak_signals_ja.json", "check": "b_phase3_dedup_selected.json"},
+           "output": "B_selected_weak_signals_ja.json", "check": "b_phase3_dedup_selected.json",
+           "color": "green", "section": "B Weak Signal"},
     "C":  {"icon": "bolt", "title": "Unexpected Scenarios",
            "sub": "Surprising futures from signals",
-           "output": "C_unexpected_scenarios_ja.json", "check": "c_phase2_scenarios.json"},
+           "output": "C_unexpected_scenarios_ja.json", "check": "c_phase2_scenarios.json",
+           "color": "orange", "section": "C Unexpected"},
     "D":  {"icon": "lightbulb", "title": "Opportunities",
-           "sub": "Business opportunities from A1 × C",
-           "output": "D_opportunity_scenarios_ja.json", "check": "d_phase2_scenarios.json"},
+           "sub": "Business opportunities from Expected × Unexpected",
+           "output": "D_opportunity_scenarios_ja.json", "check": "d_phase2_scenarios.json",
+           "color": "purple", "section": "D Opportunity"},
 }
 
+
+def _get_target_n(code):
+    """Get the configured generation count for a step."""
+    m = {"A1": getattr(cfg, "A1_GENERATE_N", 20),
+         "B": getattr(cfg, "B_TOP_N", 2000),
+         "C": getattr(cfg, "C_GENERATE_N", 150),
+         "D": getattr(cfg, "D_GENERATE_N", 40)}
+    return m.get(code, "?")
 
 def get_status(code):
     from utils.data_io import read_json
     info = STEPS[code]
+    target = _get_target_n(code)
     for key, label in [(info["output"], "delivered"), (info["check"], "candidates")]:
         d = (cfg.OUTPUT_DIR if key == info["output"] else cfg.INTERMEDIATE_DIR)
         p = d / key
@@ -112,7 +125,7 @@ def get_status(code):
             data = read_json(p)
             if data:
                 t = datetime.fromtimestamp(p.stat().st_mtime).strftime("%m/%d %H:%M")
-                return "done", f"{len(data)} {label}", t
+                return "done", f"{len(data)}/{target}", t
     return "pending", "Not started", ""
 
 
@@ -282,6 +295,14 @@ def page():
                 ui_refs["indicator"] = ui.spinner("dots", size="xs", color="amber")
                 ui_refs["indicator"].visible = False
                 ui_refs["status"] = ui.label("Ready").classes("text-xs font-medium text-emerald-600")
+                # Mini progress: N/4 steps done
+                done_count = sum(1 for c in STEPS if get_status(c)[0] == "done")
+                ui_refs["header_progress"] = ui.linear_progress(
+                    value=done_count/4, show_value=False
+                ).classes("w-24").props(f"color={'green' if done_count == 4 else 'indigo'} rounded size=6px")
+                ui_refs["header_progress_label"] = ui.label(
+                    f"{done_count}/4" + (" ✓" if done_count == 4 else "")
+                ).classes("text-xs text-gray-400")
                 ui.separator().props("vertical").classes("h-4")
                 def logout():
                     app.storage.user.clear()
@@ -294,11 +315,17 @@ def page():
     with ui.tabs().classes("w-full bg-white border-b border-gray-100 px-4").props(
         "active-color=indigo indicator-color=indigo dense no-caps align=left"
     ) as tabs:
+        def _tab_label(code):
+            """Add ✓ to tab name if step is done."""
+            if code in STEPS and get_status(code)[0] == "done":
+                return f"✓ {STEPS[code]['title']}"
+            return STEPS[code]["title"] if code in STEPS else code
+
         t_setup = ui.tab("setup", label="Setup", icon="settings")
-        t_a1 = ui.tab("a1", label="Expected", icon="article")
-        t_b = ui.tab("b", label="Signals", icon="sensors")
-        t_c = ui.tab("c", label="Unexpected", icon="bolt")
-        t_d = ui.tab("d", label="Opportunities", icon="lightbulb")
+        t_a1 = ui.tab("a1", label=_tab_label("A1"), icon="article")
+        t_b = ui.tab("b", label=_tab_label("B"), icon="sensors")
+        t_c = ui.tab("c", label=_tab_label("C"), icon="bolt")
+        t_d = ui.tab("d", label=_tab_label("D"), icon="lightbulb")
         t_res = ui.tab("res", label="Results", icon="download")
 
     # Scroll to top on tab change
@@ -362,22 +389,24 @@ def page():
                         render_params("Global", P)
 
         # ═══ STEP TABS ═══
-        def step_tab(panel, code, run_key, section, note=None, extra=None):
+        def step_tab(panel, code, run_key, note=None, extra=None):
             info = STEPS[code]
+            color = info.get("color", "indigo")
+            section = info.get("section", "")
             with ui.tab_panel(panel):
                 with ui.scroll_area().classes("w-full"):
                   with ui.column().classes("w-full max-w-3xl mx-auto py-6 gap-5"):
-                    # Header
+                    # Header with accent color
                     st, det, tm = get_status(code)
                     with ui.row().classes("w-full items-center justify-between"):
                         with ui.row().classes("items-center gap-3"):
-                            ui.icon(info["icon"], size="sm").classes("text-gray-400")
+                            ui.icon(info["icon"], size="sm").classes(f"text-{color}-500")
                             with ui.column().classes("gap-0"):
                                 ui.label(f"{info['title']}").classes("text-lg font-semibold text-gray-800")
                                 ui.label(info["sub"]).classes("text-xs text-gray-400")
                         if st == "done":
                             with ui.column().classes("items-end gap-0"):
-                                ui.badge(f"Done — {det}", color="green").classes("text-xs")
+                                ui.badge(f"Done — {det}", color=color).classes("text-xs text-white")
                                 ui.label(tm).classes("text-xs text-gray-300 mt-0.5")
                         else:
                             ui.badge("Not started", color="grey").classes("text-xs")
@@ -424,11 +453,11 @@ def page():
                                         await run_step(k, P, ui_refs)
                                     ui.button("Run", icon="play_arrow",
                                         on_click=_confirmed
-                                    ).props("unelevated no-caps size=sm color=indigo")
+                                    ).props(f"unelevated no-caps size=sm color={color}")
                             dlg.open()
 
                         with ui.row().classes("items-center gap-4"):
-                            ui.button("Run", icon="play_arrow", on_click=_click).props("color=indigo size=md")
+                            ui.button("Run", icon="play_arrow", on_click=_click).props(f"color={color} size=md")
                             with ui.column().classes("gap-0"):
                                 ui.label(est_full(run_key, P)).classes("text-xs text-gray-400")
                         ui.label("Previous results are saved. Re-running is safe.").classes("text-xs text-gray-300 mt-2 italic")
@@ -509,11 +538,11 @@ def page():
                             ui.button(f"{nl} →", on_click=lambda t=nk: tabs.set_value(t)).props("flat no-caps size=sm color=indigo")
 
         # A1
-        step_tab(t_a1, "A1", "run_a1", "A1 Expected",
+        step_tab(t_a1, "A1", "run_a1",
             "Article summarization is pre-computed. This re-runs clustering, generation, and scoring.")
 
         # B
-        step_tab(t_b, "B", "run_b", "B Weak Signal",
+        step_tab(t_b, "B", "run_b",
             "Signal scoring is pre-computed. This re-runs selection and deduplication.")
 
         # C
@@ -526,10 +555,10 @@ def page():
                     "Change the mode in Settings below."
                 ).classes("text-xs text-blue-700")
 
-        step_tab(t_c, "C", "run_c", "C Unexpected", extra=c_mode_info)
+        step_tab(t_c, "C", "run_c", extra=c_mode_info)
 
         # D
-        step_tab(t_d, "D", "run_d", "D Opportunity")
+        step_tab(t_d, "D", "run_d")
 
         # ═══ RESULTS ═══
         with ui.tab_panel(t_res):
