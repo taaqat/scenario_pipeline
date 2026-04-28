@@ -65,7 +65,7 @@ streamlit run streamlit_app.py
 docker-compose up -d
 
 # → http://localhost:8501
-# 詳見 STREAMLIT_DEPLOY.md
+# 詳見 STREAMLIT_GUIDE.md
 ```
 
 ### CLI
@@ -156,7 +156,7 @@ python run_pipeline.py --step a1 --phase 4   # 排序 + pick_final
 scenario_pipeline/
 ├── HANDOFF.md                      # 給接手工程師的部署指南（先讀這個）
 ├── README.md                       # 本檔
-├── STREAMLIT_DEPLOY.md             # Streamlit 部署指南
+├── STREAMLIT_GUIDE.md              # Streamlit 完整部署指南
 ├── pipeline_flow_document.md       # 流程說明書
 ├── CLAUDE_CODE_GUIDE.md            # Claude Code 操作 guide
 ├── .env.example                    # API key 範本

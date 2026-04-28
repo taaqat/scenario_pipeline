@@ -53,7 +53,7 @@ pipeline.log
 
 # Documentation
 *.md
-!STREAMLIT_DEPLOY.md
+!STREAMLIT_GUIDE.md
 
 # Node modules (if any)
 node_modules/
