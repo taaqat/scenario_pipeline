@@ -1,6 +1,8 @@
 """
 Data I/O helpers: read/write CSV, Excel, JSON + batching utilities.
 """
+from __future__ import annotations
+
 import json
 import logging
 import os

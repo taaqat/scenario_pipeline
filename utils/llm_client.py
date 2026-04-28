@@ -1,6 +1,8 @@
 """
 Claude API client with batching, rate limiting, retry, and cost tracking.
 """
+from __future__ import annotations
+
 import re
 import time
 import json

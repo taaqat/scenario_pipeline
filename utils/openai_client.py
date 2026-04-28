@@ -2,6 +2,8 @@
 OpenAI API client — same interface as LLMClient (set_step, call_json, concurrent_batch_call).
 Used by Step B.
 """
+from __future__ import annotations
+
 import json
 import logging
 import threading

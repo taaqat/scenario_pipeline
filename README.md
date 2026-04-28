@@ -44,12 +44,28 @@ cp .env.example .env
 
 ## Run
 
-### Web UI（推薦）
+### Web UI（NiceGUI）
 
 ```bash
 python app.py
 # → http://localhost:8080
 # 預設帳密 jri / livinglab2026（部署前請改，見 HANDOFF.md）
+```
+
+### Streamlit Web UI（部署推薦）
+
+```bash
+# 方式 1：直接運行
+streamlit run streamlit_app.py
+
+# 方式 2：使用啟動腳本
+./start_streamlit.sh
+
+# 方式 3：Docker 部署
+docker-compose up -d
+
+# → http://localhost:8501
+# 詳見 STREAMLIT_DEPLOY.md
 ```
 
 ### CLI
@@ -140,19 +156,26 @@ python run_pipeline.py --step a1 --phase 4   # 排序 + pick_final
 scenario_pipeline/
 ├── HANDOFF.md                      # 給接手工程師的部署指南（先讀這個）
 ├── README.md                       # 本檔
+├── STREAMLIT_DEPLOY.md             # Streamlit 部署指南
 ├── pipeline_flow_document.md       # 流程說明書
 ├── CLAUDE_CODE_GUIDE.md            # Claude Code 操作 guide
 ├── .env.example                    # API key 範本
 ├── requirements.txt                # Python 依賴
 ├── package.json                    # Node 依賴 (pptxgenjs)
+├── Dockerfile                      # Docker 部署配置
+├── docker-compose.yml              # Docker Compose 配置
+├── start_streamlit.sh              # Streamlit 啟動腳本
 ├── config.py                       # 全域設定 + UI_PARAMS + apply_overrides
 ├── app.py                          # NiceGUI Web UI
+├── streamlit_app.py                # Streamlit Web UI
 ├── run_pipeline.py                 # CLI 入口 + save_cost_report
 ├── generate_pptx.js                # PowerPoint 產生（Node）
 ├── validate_output.py              # 輸出驗證
 ├── audit_pptx.py                   # PPTX 審查工具
 ├── run_smoke.py                    # End-to-end smoke test
 ├── test_checkpoint.py              # B Phase 1 cache 測試（沙箱模式）
+├── .streamlit/
+│   └── config.toml                 # Streamlit 配置
 ├── configs/
 │   ├── jri_aging.py                # 預設 topic
 │   └── energy.py                   # 範例 topic

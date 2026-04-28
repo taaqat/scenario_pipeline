@@ -2,6 +2,8 @@
 Embedding-based clustering utility.
 Uses OpenAI embeddings + UMAP + HDBSCAN (BERTopic) to cluster items by semantic similarity.
 """
+from __future__ import annotations
+
 import logging
 from typing import Callable
 
