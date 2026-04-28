@@ -11,7 +11,7 @@ Usage:
     python3 run_pipeline.py --step a1 --phase 1   # Summarize articles
     python3 run_pipeline.py --step a1 --phase 2   # Cluster into themes
     python3 run_pipeline.py --step a1 --phase 3   # Generate scenarios
-    python3 run_pipeline.py --step a1 --phase 4   # Rank, gate filter, and global review
+    python3 run_pipeline.py --step a1 --phase 4   # Rank + pick_final
 """
 import argparse
 import logging

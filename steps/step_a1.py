@@ -3,9 +3,9 @@ Step A-1: Expected Scenario Generation
 =======================================
 4-phase pipeline for processing 7000+ articles:
   Phase 1: Batch summarize articles (light model, save tokens)
-  Phase 2: Cluster summaries into structural themes
+  Phase 2: Cluster summaries into structural themes (BERTopic)
   Phase 3: Generate Expected Scenarios from themes
-    Phase 4: Rank, gate filter, and global review
+  Phase 4: Rank scenarios on 5 dims + pick_final to top N
 """
 import json
 import logging
@@ -524,7 +524,7 @@ def phase3_generate(themes: list[dict] = None) -> list[dict]:
 
 # ── Phase 4: Rank & Select ───────────────────────────
 def phase4_rank(scenarios: list[dict] = None) -> list[dict]:
-    """Rank scenarios, keep all gate-passing items, then add global review flags."""
+    """Rank scenarios on 5 weighted dims, then pick_final selects top N for diversity."""
     if scenarios is None:
         scenarios = read_json(cfg.INTERMEDIATE_DIR / "a1_phase3_scenarios.json")
 
@@ -600,7 +600,7 @@ def phase4_rank(scenarios: list[dict] = None) -> list[dict]:
     ])
     save_excel(df, cfg.OUTPUT_DIR / "A1_expected_scenarios.xlsx")
 
-    logger.info(f"Phase 4 done: {len(final)} scenarios written to output after gate filter and review")
+    logger.info(f"Phase 4 done: {len(final)} scenarios written to output after pick_final")
     return final
 
 

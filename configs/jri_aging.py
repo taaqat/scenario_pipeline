@@ -17,10 +17,10 @@ B_INPUT_FILE = "Weak signals 2026-02-25_073946.xlsx"
 # ─── Generation Counts (client-facing "deliver" count) ────────────
 # Pipeline over-generates behind the scenes then picks diverse top-K.
 # Keep aligned with UI defaults so CLI and UI produce comparable output.
-A1_GENERATE_N = 20
+A1_GENERATE_N = 10
 B_TOP_N = 2000
-C_GENERATE_N = 15
-D_GENERATE_N = 8
+C_GENERATE_N = 10
+D_GENERATE_N = 10
 
 # ─── Writing Style Examples ──────────────────────────
 WRITING_STYLE_GOOD_EXAMPLE = '"80-year-olds design their own towns."'

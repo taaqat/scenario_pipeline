@@ -1,11 +1,14 @@
 """
 Step D: Opportunity Scenario Synthesis
 ======================================
-Two modes (cfg.D_MODE):
-    "hybrid" — Phase 1: Smart pair selection → Phase 2: Generate → Phase 3: Rank, gate filter, review
-    "matrix" — All A×C pairs → Phase 2: Generate all → Phase 3: Rank, gate filter, review
-Phase 2: Generate full scenarios for selected pairs
-Phase 3: Rank, gate filter, and review all candidates
+Three modes (cfg.D_MODE):
+    "random"       — Random 1A + 2C combinations (current default)
+    "select_pairs" — LLM picks ~16 best A×C pairs
+    "matrix"       — Full N_A × N_C grid (exhaustive)
+Phase 2: Generate full opportunity scenarios for the selected pairs
+Phase 3: Rank on 3 weighted dims (unexpected / impact / plausibility)
+         + pick_final selects top N for diversity
+         + optional Unexpectedness × Impact matrix classification (4 quadrants)
 """
 import json
 import logging
@@ -756,7 +759,7 @@ def _export_c_used_in_d(d_final: list[dict]):
 
 # ── Phase 3: Rank & Select ───────────────────────────
 def phase3_rank(scenarios: list[dict] = None) -> list[dict]:
-    """Rank scenarios, keep all gate-passing items, then add global review flags."""
+    """Rank scenarios on 3 weighted dims, then pick_final selects top N for diversity."""
     if scenarios is None:
         scenarios = read_json(cfg.INTERMEDIATE_DIR / "d_phase2_scenarios.json")
 
@@ -901,7 +904,7 @@ def phase3_rank(scenarios: list[dict] = None) -> list[dict]:
     elif getattr(cfg, "D_MATRIX_MODE", False):
         logger.info(f"Matrix classification skipped: need ≥3 scenarios, got {len(final)}")
 
-    logger.info(f"Phase 3 done: {len(final)} scenarios written to output after gate filter and review")
+    logger.info(f"Phase 3 done: {len(final)} scenarios written to output after pick_final")
     return final
 
 

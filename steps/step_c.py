@@ -462,7 +462,7 @@ def phase2_generate(
 
 # ── Phase 3: Rank & Select ───────────────────────────
 def phase3_rank(scenarios: list[dict] = None) -> list[dict]:
-    """Rank scenarios, keep all gate-passing items, then add global review flags."""
+    """Rank scenarios on 3 weighted dims, then pick_final selects top N for diversity."""
     if scenarios is None:
         scenarios = read_json(cfg.INTERMEDIATE_DIR / "c_phase2_scenarios.json")
 
@@ -550,7 +550,7 @@ def phase3_rank(scenarios: list[dict] = None) -> list[dict]:
     ])
     save_excel(df, cfg.OUTPUT_DIR / "C_unexpected_scenarios.xlsx")
 
-    logger.info(f"Phase 3 done: {len(final)} scenarios written to output after gate filter and review")
+    logger.info(f"Phase 3 done: {len(final)} scenarios written to output after pick_final")
     return final
 
 
