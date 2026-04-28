@@ -302,8 +302,8 @@ def phase1_summarize(input_file: Path = None) -> list[dict]:
 # ── Phase 2: Cluster into Themes ────────────────────
 def phase2_cluster(summaries: list[dict] = None) -> list[dict]:
     """
-    Take summaries → embedding-based clustering → LLM labels each cluster.
-    Uses code (k-means) for grouping, LLM only for naming themes.
+    Take summaries → BERTopic (UMAP + HDBSCAN) clustering → LLM labels each cluster.
+    Code does the grouping; LLM only names the themes.
     """
     if summaries is None:
         summaries = read_json(cfg.INTERMEDIATE_DIR / "a1_phase1_summaries.json")
@@ -328,7 +328,7 @@ def phase2_cluster(summaries: list[dict] = None) -> list[dict]:
         return_embeddings=True,
     )
 
-    # Build cluster dicts with article IDs (directly from k-means — no re-association needed)
+    # Build cluster dicts with article IDs (directly from BERTopic clustering — no re-association needed)
     cluster_dicts = build_cluster_dicts(
         clusters, summaries,
         id_field="article_id",

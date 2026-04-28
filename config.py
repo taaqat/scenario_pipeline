@@ -78,8 +78,9 @@ C_GENERATE_N = None        # Set by topic config
 #   - *_GENERATE_N (in UI_PARAMS below) is what the CLIENT asks for: "I want N final scenarios"
 #   - we generate min(client_N * OVERGEN_FACTOR, GENERATE_CAP) candidates internally
 #   - rank them all, then select_diverse_topk -> top client_N by score & topic diversity
-# OVERGEN_FACTOR is bigger for A1 because A1's k-means-per-cluster setup needs more
-# pool to actually be diverse. C/D already use forced collision so 2x is enough.
+# OVERGEN_FACTOR is bigger for A1 because A1 needs a larger pool to be diverse
+# (BERTopic produces fewer real clusters when min_cluster_size is high).
+# C/D already use forced collision so 2x is enough.
 A1_OVERGEN_FACTOR = 3
 A1_GENERATE_CAP   = 100
 A1_BERTOPIC_MIN_CLUSTER_SIZE = 30  # HDBSCAN min cluster size; lower = more granular, more outliers

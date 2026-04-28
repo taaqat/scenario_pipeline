@@ -127,7 +127,7 @@ def _normalize_source_signals(
 def phase1_cluster(selected_signals: list[dict] = None) -> list[dict]:
     """
     Cluster selected weak signals into thematic groups.
-    Uses embedding + k-means for grouping, LLM only for naming each cluster.
+    Uses embedding + BERTopic (UMAP + HDBSCAN) for grouping; LLM only names each cluster.
     """
     if selected_signals is None:
         selected_signals = read_json(cfg.INTERMEDIATE_DIR / "b_phase3_dedup_selected.json")
@@ -216,7 +216,7 @@ def phase1_cluster(selected_signals: list[dict] = None) -> list[dict]:
 # ── Phase 1 (cluster_pair mode): Cluster then randomly pair ────────
 def phase1_cluster_pair(selected_signals: list[dict] = None) -> list[dict]:
     """
-    Cluster-pair mode: run k-means first, then pair 2 clusters per
+    Cluster-pair mode: run BERTopic first, then pair 2 clusters per
     pseudo-cluster. Each pseudo-cluster merges signals from 2 thematically
     distinct base clusters, creating inter-theme collision.
 
