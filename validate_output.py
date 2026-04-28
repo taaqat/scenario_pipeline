@@ -72,6 +72,16 @@ def preview(items: list[str], limit: int = 5) -> str:
     return ", ".join(shown) + suffix
 
 
+def _score_value(scenario: dict, key_spec) -> float:
+    """Read score from one key or fallback key list."""
+    if isinstance(key_spec, str):
+        return scenario.get(key_spec, 0) or 0
+    for key in key_spec:
+        if key in scenario:
+            return scenario.get(key, 0) or 0
+    return 0
+
+
 def check_dataset_score_sums(label: str, data: list[dict], dims: list[str]):
     if not data:
         results.append(report("WARN", f"{label} score sums", "No data found — skipped"))
@@ -81,7 +91,7 @@ def check_dataset_score_sums(label: str, data: list[dict], dims: list[str]):
     for scenario in data:
         scenario_id = scenario.get("scenario_id", "?")
         total = scenario.get("total_score", 0)
-        calc = sum(scenario.get(dim, 0) for dim in dims)
+        calc = sum(_score_value(scenario, dim) for dim in dims)
         if total != calc:
             mismatches.append(f"{scenario_id}: total={total} != sum={calc}")
 
@@ -130,17 +140,27 @@ def check_score_sums():
     check_dataset_score_sums(
         "D",
         load_json(OUTPUT_DIR / "D_opportunity_scenarios_ja.json"),
-        list(cfg.D_MIN_DIM_SCORES.keys()),
+        ["unexpected_score", "impact_score"],
     )
     check_dataset_score_sums(
         "C",
         load_primary_c_output(),
-        list(cfg.C_MIN_DIM_SCORES.keys()),
+        [
+            ("score_unexpectedness", "unexpectedness"),
+            ("score_social_impact", "social_impact"),
+            ("score_uncertainty", "uncertainty"),
+        ],
     )
     check_dataset_score_sums(
         "A",
         load_json(OUTPUT_DIR / "A1_expected_scenarios_ja.json"),
-        list(cfg.A1_MIN_DIM_SCORES.keys()),
+        [
+            ("score_structural_depth", "structural_depth"),
+            ("score_irreversibility", "irreversibility"),
+            ("score_industry_related", "industry_related"),
+            ("score_topic_relevance", "topic_relevance"),
+            ("score_feasibility", "feasibility"),
+        ],
     )
 
 
@@ -149,20 +169,21 @@ def check_dim_thresholds():
     """Verify selected scenarios meet minimum dimension scores."""
     print("\n── Check 2: Dimension Thresholds ──")
 
+    # Plausibility is now a weighted dim, not a gate — no minimum threshold to check.
     check_dataset_thresholds(
         "D",
         load_json(OUTPUT_DIR / "D_opportunity_scenarios_ja.json"),
-        cfg.D_MIN_DIM_SCORES,
+        {},
     )
     check_dataset_thresholds(
         "C",
         load_primary_c_output(),
-        cfg.C_MIN_DIM_SCORES,
+        {},
     )
     check_dataset_thresholds(
         "A",
         load_json(OUTPUT_DIR / "A1_expected_scenarios_ja.json"),
-        cfg.A1_MIN_DIM_SCORES,
+        {},
     )
 
 
@@ -319,24 +340,24 @@ def check_cross_step_links():
         results.append(report("WARN", "C_used_in_D sync", "D or C_used_in_D output missing — skipped"))
 
 
-# ── Check 5: Collision-plausibility gap ──────────────
+# ── Check 5: Unexpectedness-plausibility gap ──────────
 def check_collision_plausibility_gap():
-    """Flag D scenarios where collision_score greatly exceeds plausibility_score."""
-    print("\n── Check 5: Collision vs Plausibility Gap ──")
+    """Flag D scenarios where unexpectedness greatly exceeds plausibility_score."""
+    print("\n── Check 5: Unexpectedness vs Plausibility Gap ──")
 
     d_data = load_json(OUTPUT_DIR / "D_opportunity_scenarios_ja.json")
     flagged = []
     for s in d_data:
         sid = s.get("scenario_id", "?")
-        col = s.get("collision_score", 0)
+        col = s.get("unexpected_score", 0)
         plau = s.get("plausibility_score", 0)
         if col > plau + 3:
-            flagged.append(f"{sid}: collision={col}, plausibility={plau}")
+            flagged.append(f"{sid}: unexpected={col}, plausibility={plau}")
 
     if flagged:
-        results.append(report("WARN", "Collision-plausibility gap", f"{len(flagged)} flagged: {', '.join(flagged[:5])}"))
+        results.append(report("WARN", "Unexpected-plausibility gap", f"{len(flagged)} flagged: {', '.join(flagged[:5])}"))
     else:
-        results.append(report("PASS", "Collision-plausibility gap", "No concerning gaps"))
+        results.append(report("PASS", "Unexpected-plausibility gap", "No concerning gaps"))
 
 
 # ── Main ─────────────────────────────────────────────

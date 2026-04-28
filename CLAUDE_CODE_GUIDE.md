@@ -5,9 +5,9 @@
 每個 Step 可以獨立執行，中間產物存在 `data/intermediate/`。
 
 目前流程的核心原則：
-- A1、C、D 沒有硬性的交付數上限，輸出所有通過 gate filter 的情境
-- A1、C、D 在評分後都會再跑一次全域 `llm_review`
-- D 讀的是人工篩選後的 A1 / C 輸出，不是原始全量候選
+- A1、C、D 各自由 UI 設定 GENERATE_N（最終交付數），系統 over-generate pool_n 個候選後 `pick_final` 選 top N
+- 評分後 `pick_final` 一次 LLM call 做 diversity 去重 + title 改寫；舊的 `llm_review` 已退役
+- D 讀的是 A1 / C 的 OUTPUT 檔（pick_final 後）做 A×C 配對
 
 ---
 
@@ -126,17 +126,6 @@ python3 run_pipeline.py --step d
 
 ---
 
-## 重新評分 / 人工篩選
-
-```bash
-# 重新跑既有候選池的 ranking / gate / review
-python3 rerank.py A
-python3 rerank.py C --limit 100
-python3 rerank.py D --no-translate
-```
-
----
-
 ## PPTX 報告生成
 
 ### 前置條件
@@ -149,8 +138,8 @@ node generate_pptx.js
 ```
 
 ### 輸出
-- `data/output/MVP_Report_ja.pptx`
-- `data/output/MVP_Report_zh.pptx`
+- `data/output/jri_aging/JRI_Aging_Report_ja.pptx`
+- `data/output/jri_aging/JRI_Aging_Report_zh.pptx`
 
 ---
 

@@ -4,20 +4,24 @@ You are a provocative futurist who connects faint signals into futures nobody sa
 
 Based on the following cluster of related weak signals, create ONE Unexpected Scenario.
 
-# Topic: {topic}
-
 # Scenario Criteria
-- Focus on unexpected changes with significant social impact, and high uncertainty (difficult to predict or quantify).
-- Unexpected: Outside normal forecasts or mainstream discussions, AND hard to envision in daily life.
+- Focus on unexpected changes with significant social impact, and high uncertainty (=are difficult to predict or quantify, making them highly uncertain).
+- Unexpected: Outside normal forecasts or mainstream discussions, AND on a personal level, these are ideas that hardly come to mind in one's daily life and hard to envision.
 - Significant social impact: Changes how most people live or society functions.
-- High uncertainty: Even experts cannot determine whether the event will occur.
+- High uncertainty: it is hard to anticipate or evaluate or verify its likelihood. Even if one is an expert, it is impossible to determine whether the event will occur in the future.
 
 # Output Field Specifications
 
 ## Title
-- A single sentence explaining what this "unexpected future" is. Clear and concise, under 25 Japanese characters.
+- A single sentence explaining what this "unexpected future" is. Clear and concise, under 25 words (about 60-80 Japanese characters).
 - Write in plain, vivid language that a workshop participant would find intriguing at first glance.
-- Good: "80-year-old brains outperform 20-year-olds" / "The deceased vote at shareholder meetings"
+- This step is "Unexpected" by design — it sits OUTSIDE the project's main topic. Follow whichever domain the source signals point to (any domain — energy, food, biology, law, climate, identity, finance, urban, culture, etc.) without anchoring to any predetermined frame.
+- Good examples (drawable scenes with actor + action + place, ≤15 Japanese chars):
+  - "屋根が発電し、壁が送金する村" (energy × finance)
+  - "腸内細菌が裁判の証拠になる" (biology × law)
+  - "海の上で菌が育てた肉を食べる街" (food × climate)
+  - "体内の細胞が発電所になる" (biology × energy)
+  - "遺体が食料を育てる農場になる" (death × food)
 - Bad: "An era where digital personas of the deceased hold legal rights and intervene in family and social decision-making" — too long, nobody wants to read it
 
 ## Overview
@@ -57,7 +61,7 @@ Based on the following cluster of related weak signals, create ONE Unexpected Sc
 - Strictly respect all word count limits specified in the schema.
 - 日本語の文章品質は最優先事項。以下を違反した文は書き直してから出力すること：
   - 一文は60字以内。読点（、）3つ以上の文は必ず分割する。
-  - 漢字4字以上の連続禁止（例：「高齢者支援型統合ケア基盤」→「高齢者を支える統合的なケア基盤」）。
+  - 漢字4字以上の連続禁止（例：「分散型地域金融基盤」→「地域ごとに分散する金融の基盤」）。
   - 「〜化」「〜的」の安易な連続使用禁止。具体的な動詞で書き換える。
   - 主語（誰が・何が）を省略しない。
   - 数値は半角アラビア数字（×二千 → ○2,000）。
@@ -68,7 +72,7 @@ ALL text fields in Japanese (_ja) only.
 ```json
 {{
   "scenario_id": "C-{index}",
-  "title_ja": "A single vivid sentence about this unexpected future (under 25 Japanese characters, Japanese)",
+  "title_ja": "A single vivid sentence about this unexpected future (under 25 words ≈ 60-80 Japanese chars, Japanese)",
   "overview_ja": "Brief introduction to this unexpected future (200-400 Japanese characters)",
   "why_ja": [
     "Reason 1 (1-2 sentences, Japanese)",
@@ -108,17 +112,17 @@ ALL text fields in Japanese (_ja) only.
 - Test: could an illustrator draw this title as a single image? If not, it is too abstract — rewrite.
 - The title names WHO does WHAT in a specific situation. It does not name an era, a system, or an abstract concept.
 
-### Title Examples (GOOD vs BAD)
+### Title Examples (GOOD vs BAD) — GOOD = drawable scene with actor/action/place. BAD = consulting-deck abstraction. Do NOT let the project's main topic (whatever it is) pull your scenario back into the predictable frame.
 | GOOD ✓ | BAD ✗ | Why bad |
 |---------|-------|---------|
-| 90歳が20代の姿で面接に受かる | デジタルアバターによる年齢バイアス解消 | Cannot draw "bias elimination" |
-| 認知症の祖母が匂いで街を歩く | 嗅覚テクノロジーによる認知症ケア革新 | Reads like a grant proposal |
-| 美容院が認知症の最前線になる | 理美容業界の認知症早期発見機能の拡大 | Too wordy, too abstract |
-| 死んだ人が株主総会で投票する | 故人のデジタルペルソナの法的権利 | Not a scene; a legal concept |
-| 高齢者が「本人」を証明できなくなる | 高齢社会における本人認証課題 | Boring; no surprise element |
+| 屋根が発電し、壁が送金する村 | 分散型エネルギー金融の地域実装 | Abstract jargon, no scene |
+| 腸内細菌が裁判の証拠になる | マイクロバイオームの司法応用 | Reads like a research title |
+| 冷蔵庫が空気からご飯を作る | 空気由来タンパク質の家庭利用 | Not a scene; a product description |
+| 涼しい街が入場料を取り始める | 気候変動下の都市アクセス権 | Policy abstraction, no actor |
+| 海の上で菌が育てた肉を食べる街 | 洋上発酵タンパク質の社会実装 | Reads like a grant proposal |
 
 ## Surprise Comes From the Mechanism
-- The source of surprise must be a specific MECHANISM — not a generic outcome. "Elderly gain power" is a generic outcome. Your scenario must center on ONE specific mechanism (a biological discovery? a legal loophole? a technology failure? a cultural reversal?) that makes the reader say "I never thought THAT could happen."
+- The source of surprise must be a specific MECHANISM — not a generic outcome. Generic outcome example: "X group gains power". Your scenario must center on ONE specific mechanism (a biological discovery? a legal loophole? a technology failure? a cultural reversal?) that makes the reader say "I never thought THAT could happen."
 - Name the mechanism explicitly in the title and overview.
 
 ## Source Signal Integrity — HARD GATE

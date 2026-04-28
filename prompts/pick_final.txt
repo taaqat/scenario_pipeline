@@ -1,0 +1,56 @@
+You receive a ranked list of scenarios. Pick the best {k} and return their ids.
+
+# Topic
+{topic}
+
+(If the Topic section above is empty, this step has NO topic constraint — ignore criterion 5 entirely.)
+
+# Selection criteria (higher priority first)
+1. **Content quality** — the list is already ranked; prefer higher positions.
+2. **Mechanism diversity (STRICT)** — read each scenario's full body, not just the title. Group all scenarios describing the same core 2030年代 societal mechanism — regardless of surface wording, industry framing, or actor. Within each group, keep ONLY the best-ranked one. Test: would a workshop participant say "wait, isn't this the same idea as that other one, just dressed differently?" If yes, they belong to one group.
+3. **Industry/use-case spread (STRICT)** — beyond mechanism, also group by the business sector or use case the scenario is about (food/meal-delivery, mobility, housing, energy, finance/insurance, end-of-life care, data sovereignty, identity, etc.). If 4 scenarios all sit in the same sector (e.g. all food/meal businesses), keep at most 1-2 — even if their underlying mechanisms differ. Use the freed slots to surface scenarios from other sectors. The final K should span as many sectors as possible.
+4. **Duplicate titles** — never pick two scenarios with nearly identical titles.
+5. **Topic relevance (soft guide, NOT a gate — only applies if Topic is non-empty)** — "{topic}" is the project's direction, not a filter. A scenario that is tangential to the topic but carries a strong, non-obvious mechanism SHOULD be kept over a boring topic-aligned one. Only drop a scenario if it is BOTH unrelated AND weak on mechanism. The final K should span multiple angles on — and adjacent to — the topic, not collapse onto its most obvious framing. If Topic is empty, SKIP this criterion entirely and select purely on criteria 1–4.
+
+6. **Abstraction layer spread (best-effort)** — classify each candidate by the layer of change it describes:
+   (a) 個人日常 / micro — daily life (eating, shopping, working, living)
+   (b) 制度 / meso — laws, tax, insurance, education, healthcare systems
+   (c) 構造 / macro — economy, demographics, politics, international, infrastructure
+   (d) 意義・文化 / cultural — identity, beliefs, generational values, rituals
+
+   If the candidate pool contains scenarios from multiple layers, spread the final K across them rather than collapsing onto one layer (typical failure: 20 scenarios all at layer (a) micro). If the pool is concentrated in one layer, take what exists — this is best-effort, not a hard gate. Do not fabricate a "meso" or "macro" label onto a scenario whose body is actually micro.
+
+# Title rewriting (do this as part of selection)
+A title is BAD if ANY of the following:
+
+(a) **Jargon / abstract** — ends with business jargon (事業 / 市場 / プラットフォーム / ソリューション / サービス / 基盤), uses abstract relational nouns with no scene (境目 / 融合 / 関係 / あり方), or reads like a consulting deck heading.
+
+(b) **Not faithful to content (STRICT — read the body, not just the title)** — the title captures only a surface detail (a product, a store aisle, a daily activity, a single device) while the scenario body describes a larger structural change (market restructuring, new institution, behavioral shift, system collapse). The title's CORE NOUN must match the scenario's CORE MECHANISM. If the title is about a symptom / product, but the scenario is about the system / shift, the title has the wrong abstraction layer. Failure example: scenario body describes a full reshaping of elderly retail channels; title is "大人用おむつの売り場と買い方" — the shelves are the symptom, not the mechanism.
+
+A title is GOOD if BOTH:
+- names actor + action + place/situation (drawable scene, e.g. "80歳が新人研修を受ける工場"), AND
+- its core noun matches the scenario body's core mechanism (not a downstream symptom).
+
+When rewriting: base the new title on the scenario's CORE MECHANISM (read overview + what/how), not on the original title's wording. Keep the drawable-scene format, under 25 Japanese characters. The new title must be something a reader of the body would agree is the scenario's real subject.
+
+Rewrite ONLY bad titles; otherwise echo verbatim in "title_new".
+
+# Output — respond ONLY with JSON, no other text
+```json
+{{
+  "selected": [
+    {{"id": "A-1", "title_new": "concrete vivid title"}},
+    {{"id": "A-7", "title_new": "..."}}
+  ]
+}}
+```
+
+# Rules
+- "selected" MUST contain exactly {k} items.
+- Order matters — put the most important scenarios first.
+- Every "id" in output MUST appear in the input.
+- "title_new" is always present. If unchanged from the input title, echo verbatim.
+- "title_new" MUST be in the same language as the input title.
+
+# Scenarios (already ranked, best first)
+{scenarios}

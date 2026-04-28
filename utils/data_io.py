@@ -187,15 +187,17 @@ def rank_and_select(
     prompt_vars: dict[str, str] | None = None,
     batch_size: int = 30,
     step_label: str = "Rank",
-    min_dim_scores: dict[str, int] | None = None,
+    weights: dict[str, float] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """
-    Shared ranking pipeline: batch score → global sort → gate filter.
+    Shared ranking pipeline: batch score → compute weighted_score → sort.
 
-    Returns (all_scenarios_sorted, filtered_selected).
+    Returns (all_scenarios_sorted, all_scenarios_sorted) — no filter, both lists identical
+    (tuple kept for API compat with older callers that destructure).
+
     - summary_fn(scenario) -> dict: produces a condensed summary for the scoring prompt
     - prompt_vars: extra {key: value} replacements for prompt_tpl
-    - min_dim_scores: per-dimension minimum scores (scenarios below any threshold are dropped)
+    - weights: per-dimension weight (0-5, default 1 each). weighted_score = Σ weight × raw_score.
     """
     summaries = [summary_fn(s) for s in scenarios]
     batches = chunk_list(summaries, batch_size)
@@ -219,151 +221,150 @@ def rank_and_select(
         except Exception as e:
             logger.error(f"  Batch {bi+1}/{len(batches)} failed: {e}")
 
-    # Global sort by total_score, tiebreak by dimension score variance
-    # (higher variance = more distinctive profile = preferred over flat scores)
-    def _sort_key(s):
-        total = s.get("total_score", 0)
-        dim_scores = [s.get(d if d.endswith("_score") else f"score_{d}", 0) for d in dims]
-        if len(dim_scores) > 1:
-            mean = sum(dim_scores) / len(dim_scores)
-            variance = sum((x - mean) ** 2 for x in dim_scores) / len(dim_scores)
-        else:
-            variance = 0
-        return (total, variance)
+    # Compute weighted_score for each scenario; sort by it desc.
+    # weights acts as an allow-list: dims not in `weights` are still scored by the LLM
+    # and stored on the scenario, but do NOT contribute to weighted_score. This lets
+    # callers keep purely-reference dims out of ranking if they ever need to.
+    w = weights or {}
+    def _score_key(d):
+        return d if d.endswith("_score") else f"score_{d}"
+    weighted_dims = [d for d in dims if d in w]
+    for s in scenarios:
+        wsum = 0.0
+        for d in weighted_dims:
+            raw = s.get(_score_key(d), 0) or 0
+            wsum += w[d] * raw
+        s["weighted_score"] = wsum
 
-    scenarios.sort(key=_sort_key, reverse=True)
-
-    # Filter by minimum per-dimension scores
-    if min_dim_scores:
-        def passes_gate(s):
-            for dim_key, min_val in min_dim_scores.items():
-                if s.get(dim_key, 0) < min_val:
-                    return False
-            return True
-        before = len(scenarios)
-        selected = [s for s in scenarios if passes_gate(s)]
-        dropped = before - len(selected)
-        if dropped:
-            logger.info(f"{step_label}: {dropped} scenarios below dimension thresholds, {len(selected)} remain")
+    # If every weighted dim has weight 0 (or no dim is weighted), weighted_score is
+    # meaningless; fall back to total_score.
+    all_zero = not weighted_dims or all(w[d] == 0 for d in weighted_dims)
+    if all_zero:
+        logger.warning(
+            f"{step_label}: all dimension weights are 0 — falling back to total_score for ranking"
+        )
+        scenarios.sort(key=lambda s: s.get("total_score", 0), reverse=True)
     else:
-        selected = list(scenarios)
+        scenarios.sort(key=lambda s: s.get("weighted_score", 0), reverse=True)
 
-    scored = [s for s in selected if s.get("total_score", 0) > 0]
+    # No filter — ranking only. Keep scenarios with non-zero scores ahead of un-scored ones.
+    scored = [s for s in scenarios if s.get("total_score", 0) > 0 or s.get("weighted_score", 0) > 0]
     if not scored:
         logger.warning(f"{step_label} failed — using generation order as fallback")
-        scored = selected
+        scored = list(scenarios)
 
-    logger.info(f"{step_label}: {len(scored)} scored scenarios passed gate filter")
+    logger.info(f"{step_label}: {len(scored)} scenarios ranked by weighted_score")
     return scenarios, scored
 
 
-def enforce_gate(
-    scenarios: list[dict],
-    min_dim_scores: dict[str, int] | None,
-    *,
-    step_label: str = "Gate",
-) -> list[dict]:
+def compute_pool_size(deliver_n: int, factor: float, cap: int) -> int:
+    """How many candidates to actually generate so we can later pick diverse top-K.
+    Caps at `cap` so a large client-facing deliver_n cannot blow the API budget.
     """
-    Final safety-net: remove any scenarios that violate dimension thresholds.
-    Should be called just before saving output to catch any leaks from
-    upstream steps (llm_review, manual edits, backup restores, etc.).
-    """
-    if not min_dim_scores:
-        return scenarios
-    before = len(scenarios)
-    kept = [
-        s for s in scenarios
-        if all(s.get(dim, 0) >= minv for dim, minv in min_dim_scores.items())
-    ]
-    dropped = before - len(kept)
-    if dropped:
-        kept_ids = {id(s) for s in kept}
-        ids = [s.get("scenario_id") or s.get("signal_id") for s in scenarios if id(s) not in kept_ids]
-        logger.warning(
-            f"{step_label} enforce_gate: dropped {dropped} scenarios below thresholds: {ids}"
-        )
-    else:
-        logger.info(f"{step_label} enforce_gate: all {before} scenarios pass")
-    return kept
+    deliver_n = max(1, int(deliver_n or 0))
+    factor = max(1.0, float(factor or 1.0))
+    cap = max(deliver_n, int(cap or deliver_n))
+    return min(int(deliver_n * factor), cap)
 
 
-def llm_review(
+def pick_final(
     scenarios: list[dict],
+    k: int,
     llm,
     model: str,
     *,
-    step: str,
-    summary_fn,
-    prompt_vars: dict[str, str] | None = None,
-    step_label: str = "Review",
+    fields: list[str],
+    topic: str = "",
+    id_field: str = "scenario_id",
+    title_keys: tuple = ("title_ja", "title", "opportunity_title_ja", "opportunity_title"),
+    step_label: str = "Pick",
 ) -> list[dict]:
-    """
-    LLM-based global review: send all scored scenarios to LLM for cross-scenario
-    comparison. Flags duplicates, theme overlaps, and step-specific quality issues.
+    """Single LLM call: pick K from ranked scenarios, rewrite bad titles in place.
 
-    Mutates scenarios in-place by adding review flags. Returns the same list.
-
-    Args:
-        scenarios: list of scenario dicts (already scored and gate-filtered)
-        llm: OpenAI client instance with call_json method
-        model: model name for the review call
-        step: one of "A1", "C", "D" — determines which flags are checked
-        summary_fn: produces a condensed dict for each scenario
-        prompt_vars: extra {key: value} replacements for the review prompt
+    Replaces the old check_diversity + select_diverse_topk pair. The picker judges
+    score, diversity, duplicate titles, and topic relevance in one shot, and
+    optionally rewrites titles that are too jargony/abstract.
     """
     if not scenarios:
-        return scenarios
+        return []
+    if k >= len(scenarios):
+        return list(scenarios)
 
-    review_prompt_tpl = load_prompt("review_scenarios.txt")
+    # Find which title key each scenario actually has, so we can round-trip
+    def _title_of(s):
+        for tk in title_keys:
+            v = s.get(tk)
+            if isinstance(v, str) and v.strip():
+                return tk, v
+        return None, ""
 
-    summaries = [summary_fn(s) for s in scenarios]
-    prompt = review_prompt_tpl.replace(
-        "{scenarios}", json.dumps(summaries, ensure_ascii=False, indent=1)
-    )
-    prompt = prompt.replace("{step}", step)
-    for k, v in (prompt_vars or {}).items():
-        prompt = prompt.replace(f"{{{k}}}", v)
+    # For diversity judgment the LLM needs enough body text to detect "same core
+    # idea" underneath different titles. First field (usually the primary narrative
+    # like overview / change_from / collision_insight) gets the widest budget.
+    items = []
+    for s in scenarios:
+        tk, title = _title_of(s)
+        entry = {
+            "id": s.get(id_field, ""),
+            "weighted_score": round(s.get("weighted_score", 0) or 0, 1),
+            "title": title,
+        }
+        for idx, f in enumerate(fields):
+            v = s.get(f)
+            # Give the primary narrative field (index 1 — first non-title field)
+            # a larger budget so the picker can compare full premises.
+            char_budget = 600 if idx <= 1 else 300
+            if isinstance(v, str) and v:
+                entry[f] = v[:char_budget]
+            elif isinstance(v, list):
+                entry[f] = "; ".join(str(x)[:120] for x in v[:3])
+        items.append(entry)
 
-    logger.info(f"{step_label}: reviewing {len(scenarios)} scenarios globally")
+    import json as _json
+    prompt = load_prompt("pick_final.txt")
+    prompt = (prompt
+              .replace("{k}", str(k))
+              .replace("{topic}", topic or "")
+              .replace("{scenarios}", _json.dumps(items, ensure_ascii=False, indent=1)))
 
     try:
         raw = llm.call_json(prompt, model=model, temperature=0.2, max_tokens=16384)
-        reviews = raw if isinstance(raw, list) else raw.get("reviews", [])
+        if not isinstance(raw, dict):
+            raise ValueError(f"picker returned non-dict: {type(raw).__name__}")
+        selected = raw.get("selected") or []
+        if not isinstance(selected, list) or not selected:
+            raise ValueError("picker: 'selected' empty or not a list")
 
-        review_map = {}
-        for r in reviews:
-            rid = r.get("scenario_id")
-            if rid:
-                review_map[rid] = r
-
-        flagged = 0
-        for s in scenarios:
-            sid = s.get("scenario_id")
-            if sid not in review_map:
+        by_id = {str(s.get(id_field, "")): s for s in scenarios}
+        final = []
+        seen = set()
+        for entry in selected:
+            if not isinstance(entry, dict):
                 continue
-            r = review_map[sid]
-            # Apply flags based on step
-            if r.get("duplicate_of"):
-                s["review_duplicate_of"] = r["duplicate_of"]
-                flagged += 1
-            if r.get("theme_overlap"):
-                s["review_theme_overlap"] = r["theme_overlap"]
-                flagged += 1
-            if r.get("weak_source"):
-                s["review_weak_source"] = True
-                flagged += 1
-            if r.get("weak_logic"):
-                s["review_weak_logic"] = True
-                flagged += 1
-            if r.get("weak_collision"):
-                s["review_weak_collision"] = True
-                flagged += 1
-            if r.get("review_note"):
-                s["review_note"] = r["review_note"]
+            sid = str(entry.get("id", ""))
+            if not sid or sid in seen:
+                continue
+            s = by_id.get(sid)
+            if s is None:
+                logger.warning(f"{step_label}: picker referenced unknown id {sid!r}, skipping")
+                continue
+            title_new = (entry.get("title_new") or "").strip()
+            if title_new:
+                tk, old_title = _title_of(s)
+                if tk and title_new != old_title:
+                    s.setdefault("title_original", old_title)
+                    s[tk] = title_new
+                    logger.info(f"{step_label}: {sid} title rewritten -> {title_new}")
+            final.append(s)
+            seen.add(sid)
 
-        logger.info(f"{step_label}: review complete, {flagged} flags raised across {len(scenarios)} scenarios")
-
+        if not final:
+            raise ValueError("picker returned no valid ids")
+        logger.info(f"{step_label}: picker selected {len(final)} from {len(scenarios)} candidates")
+        return final
     except Exception as e:
-        logger.warning(f"{step_label}: LLM review failed ({e}), skipping review flags")
+        logger.warning(f"{step_label}: picker failed ({e}), falling back to top-K by weighted_score")
+        ranked = sorted(scenarios, key=lambda s: -(s.get("weighted_score", 0) or 0))
+        return ranked[:k]
 
-    return scenarios
+

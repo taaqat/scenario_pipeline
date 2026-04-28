@@ -14,11 +14,13 @@ OUTPUT_SUBDIR = "jri_aging"
 A1_INPUT_FILE = "日本 JRI aging 7240 rows.xlsx"
 B_INPUT_FILE = "Weak signals 2026-02-25_073946.xlsx"
 
-# ─── Generation Counts ───────────────────────────────
+# ─── Generation Counts (client-facing "deliver" count) ────────────
+# Pipeline over-generates behind the scenes then picks diverse top-K.
+# Keep aligned with UI defaults so CLI and UI produce comparable output.
 A1_GENERATE_N = 20
 B_TOP_N = 2000
-C_GENERATE_N = 150
-D_GENERATE_N = 40
+C_GENERATE_N = 15
+D_GENERATE_N = 8
 
 # ─── Writing Style Examples ──────────────────────────
 WRITING_STYLE_GOOD_EXAMPLE = '"80-year-olds design their own towns."'

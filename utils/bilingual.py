@@ -156,10 +156,10 @@ def translate_to_zh(
 def split_bilingual(data: Union[dict, list], lang: str) -> Union[dict, list]:
     """
     Recursively strip language suffixes from field names.
-    
+
     For lang="ja": keeps _ja fields, removes _zh fields, strips the _ja suffix.
     For lang="zh": keeps _zh fields, removes _ja fields, strips the _zh suffix.
-    
+
     Fields without _ja/_zh suffix are kept as-is (shared fields like scenario_id).
     """
     _ALL_SUFFIXES = ("_ja", "_zh")
@@ -183,7 +183,7 @@ def split_bilingual(data: Union[dict, list], lang: str) -> Union[dict, list]:
                 # Shared field (no suffix) — keep as-is
                 result[key] = split_bilingual(value, lang)
         return result
-    
+
     # Primitive types — return as-is
     return data
 

@@ -41,9 +41,9 @@ if not OPENAI_API_KEY:
     import warnings
     warnings.warn("OPENAI_API_KEY not set — OpenAI API calls will fail", stacklevel=2)
 
-B_MODEL_SCORE     = "gpt-5.2"    # B-score: 301 concurrent batches
-B_MODEL_DIVERSITY = "gpt-5.2"    # B-diversity: single large call
-RANK_MODEL        = "gpt-5.2"    # rank / select / score (A1-rank, C-rank, D-select, D-rank)
+B_MODEL_SCORE     = "gpt-5.4"    # B-score: 301 concurrent batches
+B_MODEL_DIVERSITY = "gpt-5.4"    # B-diversity: single large call
+RANK_MODEL        = "gpt-5.4"    # rank / select / score (A1-rank, C-rank, D-select, D-rank)
 TRANSLATE_MODEL   = "gpt-5"   # ja→zh translation (all steps) — 翻譯不需最強模型
 TRANSLATE_ENABLED = False      # Set True to translate ja→zh (adds ~10-20 min per step)
 
@@ -62,33 +62,41 @@ A1_INPUT_FILE = None       # Set by topic config
 A1_PHASE1_BATCH = 10       # 每批摘要幾篇文章
 A1_PHASE2_BATCH = 50       # 每批歸納幾篇摘要 → 主題
 A1_GENERATE_N = None       # Set by topic config
-A1_MIN_DIM_SCORES = {"score_structural_depth": 5, "score_irreversibility": 5, "score_industry_relevance": 0, "score_topic_relevance": 0, "score_feasibility": 5}
-A1_TOPIC_RELEVANCE_CAP = False   # If True: topic_relevance ≤ 3 → total_score capped at 15
+A1_WEIGHTS = {"structural_depth": 1, "irreversibility": 1, "industry_related": 1, "topic_relevance": 1, "feasibility": 1}  # 0-10 per dim. industry_related = customer-original criterion; topic_relevance = our addition (kept separate per user instruction)
 
 # ─── Step B: Weak Signal Selection ───────────────────
 B_INPUT_FILE = None        # Set by topic config
 B_BATCH_SIZE = 25          # 每批評分幾筆（25: 平衡覆蓋率與呼叫次數）
 B_TOP_N = None             # Set by topic config
 B_DIVERSITY_BATCH = 600    # 每批去重幾筆（避免單次 call 輸出截斷）
-B_MIN_DIM_SCORES = {"outside_area": 5, "novelty": 5, "social_impact": 5, "topic_relevance": 0}
-B_TOPIC_RELEVANCE_CAP = False    # If True: topic_relevance ≤ 3 → total_score capped at 15
+B_WEIGHTS = {"outside_area": 1, "novelty": 1, "social_impact": 1}  # 0-10 per dim; applied when re-ranking cached Phase 1 scores
 
 # ─── Step C: Unexpected Scenarios ────────────────────
 C_GENERATE_N = None        # Set by topic config
-C_MODE = "cluster"                         # "cluster" (k-means) or "random" (random grouping)
-C_DIVERSITY_MAX_PCT = 40                   # Max % of final scenarios from a single theme
-C_MIN_DIM_SCORES = {
-    "score_unexpectedness": 5,
-    "score_social_impact": 5,
-    "score_uncertainty": 5,
-}
+# ─── Over-generation + diversity-aware top-K (system-managed, hidden from UI) ──
+# For each step:
+#   - *_GENERATE_N (in UI_PARAMS below) is what the CLIENT asks for: "I want N final scenarios"
+#   - we generate min(client_N * OVERGEN_FACTOR, GENERATE_CAP) candidates internally
+#   - rank them all, then select_diverse_topk -> top client_N by score & topic diversity
+# OVERGEN_FACTOR is bigger for A1 because A1's k-means-per-cluster setup needs more
+# pool to actually be diverse. C/D already use forced collision so 2x is enough.
+A1_OVERGEN_FACTOR = 3
+A1_GENERATE_CAP   = 100
+A1_BERTOPIC_MIN_CLUSTER_SIZE = 30  # HDBSCAN min cluster size; lower = more granular, more outliers
+A1_BERTOPIC_DROP_OUTLIERS = True   # drop HDBSCAN noise bucket (-1) — incoherent for LLM labeling
+C_OVERGEN_FACTOR  = 2
+C_GENERATE_CAP    = 200
+C_BERTOPIC_MIN_CLUSTER_SIZE = 15  # smaller than A1 because signals are shorter and pool size is smaller
+C_BERTOPIC_DROP_OUTLIERS = True
+D_OVERGEN_FACTOR  = 2
+D_GENERATE_CAP    = 60
+C_MODE = "cluster_pair"                    # "cluster" | "cluster_pair" | "signal_pair"
+C_WEIGHTS = {"unexpectedness": 1, "social_impact": 1, "uncertainty": 1}  # 0-5 per dim
 
 # ─── Step D: Opportunity Scenarios ───────────────────
-D_MODE = "hybrid"                          # "hybrid" (smart pair selection) or "random" (random A×C pairing)
+D_MODE = "random"                          # "random" (random A×C pairing) — hybrid retired
 D_GENERATE_N = None        # Set by topic config
-D_MIN_DIM_SCORES = {"collision_score": 0, "unexpected_score": 5, "impact_score": 5, "plausibility_score": 5, "topic_relevance_score": 0}
-D_PLAUSIBILITY_PASSFAIL = True   # If True: plausibility is pass/fail (≥ threshold), not counted in total
-D_TOPIC_RELEVANCE_CAP = False    # If True: topic_relevance_score ≤ 3 → total_score capped at 20
+D_WEIGHTS = {"unexpected_score": 1, "impact_score": 1, "plausibility_score": 1}  # all 3 dims weighted; matrix axes still = Unexpectedness × Impact
 D_MATRIX_MODE = True             # If True: classify scenarios into Unexpectedness × Impact matrix
 
 
@@ -199,46 +207,37 @@ load_topic_config()
 
 UI_PARAMS = {
     # ── Global ──
-    "TOPIC":        {"section": "Global", "label": "Research Topic", "hint": "The main theme AI will focus on. Changing this affects scoring in all steps — re-run needed.", "type": "text", "default": TOPIC, "priority": "main"},
-    "TIMEFRAME":    {"section": "Global", "label": "Time Horizon", "hint": "How far into the future to look. Changing this affects scenario generation — re-run needed.", "type": "text", "default": TIMEFRAME, "priority": "main"},
-    "INDUSTRIES":   {"section": "Global", "label": "Target Industries", "hint": "Comma-separated. AI will tailor scenarios to these industries. Changing this affects all steps — re-run needed.", "type": "text", "default": ", ".join(CLIENT_PROFILE["industries"]), "priority": "main"},
-    "TRANSLATE_ENABLED": {"section": "Global", "label": "Translate to Chinese", "hint": "Translate all results from Japanese to Chinese. Adds ~10-20 min per step. OFF = Japanese only.", "type": "bool", "default": TRANSLATE_ENABLED, "priority": "main"},
+    "TOPIC":        {"section": "Global", "label": "Research Topic", "hint": "The core subject of the analysis. ⚠ If you change this, re-run every step (A1 → B → C → D).", "type": "text", "default": TOPIC, "priority": "main"},
+    "TIMEFRAME":    {"section": "Global", "label": "Time Horizon", "hint": "The future window the scenarios should describe (e.g. \"Next 10-15 years\"). ⚠ If you change this, re-run every step.", "type": "text", "default": TIMEFRAME, "priority": "main"},
+    "INDUSTRIES":   {"section": "Global", "label": "Target Industries", "hint": "Industries the client cares about, comma-separated. ⚠ If you change this, re-run every step.", "type": "text", "default": ", ".join(CLIENT_PROFILE["industries"]), "priority": "main"},
 
     # ── A1 ──
-    "A1_GENERATE_N":                {"section": "A1 Expected", "label": "Number of scenarios to generate", "hint": "More = broader coverage but slower. Recommended: 20.", "type": "number", "min": 5, "max": 100, "default": 20, "priority": "main"},
-    "A1_SCORE_STRUCTURAL_DEPTH":    {"section": "A1 Expected", "label": "Min. Structural Depth", "hint": "How deeply must the scenario change industry structure? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
-    "A1_SCORE_IRREVERSIBILITY":     {"section": "A1 Expected", "label": "Min. Irreversibility", "hint": "How hard to reverse the change? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
-    "A1_SCORE_INDUSTRY_RELEVANCE":  {"section": "A1 Expected", "label": "Min. Industry Relevance", "hint": "How relevant to your industries? (0 = allow all)", "type": "number", "min": 0, "max": 10, "default": 0, "priority": "advanced"},
-    "A1_SCORE_TOPIC_RELEVANCE":     {"section": "A1 Expected", "label": "Min. Topic Relevance", "hint": "How relevant to the research topic? (0 = allow all)", "type": "number", "min": 0, "max": 10, "default": 0, "priority": "advanced"},
-    "A1_SCORE_FEASIBILITY":         {"section": "A1 Expected", "label": "Min. Feasibility", "hint": "Could this realistically happen in 10-15 years? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
-    "A1_TOPIC_RELEVANCE_CAP":       {"section": "A1 Expected", "label": "Strict topic filter", "hint": "If ON, scenarios barely related to the topic are heavily penalized.", "type": "bool", "default": False, "priority": "advanced"},
+    "A1_GENERATE_N":                {"section": "A1 Expected", "label": "Number of scenarios to deliver", "hint": "Final number of expected scenarios shown to the client. The system over-generates candidates and then picks the most representative ones for diversity.", "type": "number", "min": 5, "max": 30, "default": 10, "priority": "main"},
+    "A1_WEIGHT_STRUCTURAL_DEPTH":   {"section": "A1 Expected", "label": "Weight: Structural Depth", "hint": "Changes basic operating models or value chain.", "type": "number", "min": 0, "max": 10, "default": 1, "priority": "advanced"},
+    "A1_WEIGHT_IRREVERSIBILITY":    {"section": "A1 Expected", "label": "Weight: Irreversibility", "hint": "Too costly or practically impossible to return to previous models or operational systems once the change is implemented.", "type": "number", "min": 0, "max": 10, "default": 1, "priority": "advanced"},
+    "A1_WEIGHT_INDUSTRY_RELATED":   {"section": "A1 Expected", "label": "Weight: Industry-related", "hint": "Directly affects core industry processes.", "type": "number", "min": 0, "max": 10, "default": 1, "priority": "advanced"},
+    "A1_WEIGHT_TOPIC_RELEVANCE":    {"section": "A1 Expected", "label": "Weight: Topic relevance", "hint": "How directly the scenario relates to the project topic.", "type": "number", "min": 0, "max": 10, "default": 1, "priority": "advanced"},
+    "A1_WEIGHT_FEASIBILITY":        {"section": "A1 Expected", "label": "Weight: Feasibility", "hint": "Realistically achievable in 10-15 years.", "type": "number", "min": 0, "max": 10, "default": 1, "priority": "advanced"},
 
     # ── B ──
-    "B_TOP_N":                      {"section": "B Weak Signal", "label": "Number of signals to keep", "hint": "How many weak signals to pass to the next step. Recommended: 2000.", "type": "number", "min": 100, "max": 5000, "default": 2000, "priority": "main"},
-    "B_SCORE_OUTSIDE_AREA":         {"section": "B Weak Signal", "label": "Min. Outside Area", "hint": "Must be outside your normal research scope? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
-    "B_SCORE_NOVELTY":              {"section": "B Weak Signal", "label": "Min. Novelty", "hint": "Must be genuinely new information? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
-    "B_SCORE_SOCIAL_IMPACT":        {"section": "B Weak Signal", "label": "Min. Social Impact", "hint": "Must have potential societal impact? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
-    "B_SCORE_TOPIC_RELEVANCE":      {"section": "B Weak Signal", "label": "Min. Topic Relevance", "hint": "Must be related to the research topic? (0 = allow all)", "type": "number", "min": 0, "max": 10, "default": 0, "priority": "advanced"},
-    "B_TOPIC_RELEVANCE_CAP":        {"section": "B Weak Signal", "label": "Strict topic filter", "hint": "If ON, signals barely related to the topic are heavily penalized.", "type": "bool", "default": False, "priority": "advanced"},
+    "B_TOP_N":                      {"section": "B Weak Signal", "label": "Number of signals to keep", "hint": "How many weak signals to pass to Unexpected Scenarios. AI scores are cached, so changing this number (or the weights below) only re-ranks and de-duplicates — the expensive scoring step is not re-run.", "type": "number", "min": 100, "max": 2000, "default": 2000, "priority": "main"},
+    "B_WEIGHT_OUTSIDE_AREA":        {"section": "B Weak Signal", "label": "Weight: Outside client's area", "hint": "Information outside the perspective of the client company's employees (areas they normally investigate).", "type": "number", "min": 0, "max": 10, "default": 1, "priority": "advanced"},
+    "B_WEIGHT_NOVELTY":             {"section": "B Weak Signal", "label": "Weight: Novelty", "hint": "Information that is entirely new / unheard-of to the clients.", "type": "number", "min": 0, "max": 10, "default": 1, "priority": "advanced"},
+    "B_WEIGHT_SOCIAL_IMPACT":       {"section": "B Weak Signal", "label": "Weight: Social Impact", "hint": "Could affect broad social dimensions if developed.", "type": "number", "min": 0, "max": 10, "default": 1, "priority": "advanced"},
 
     # ── C ──
-    "C_GENERATE_N":                 {"section": "C Unexpected", "label": "Number of scenarios to generate", "hint": "More = broader coverage but slower. Recommended: 100-150.", "type": "number", "min": 5, "max": 300, "default": 150, "priority": "main"},
-    "C_MODE":                       {"section": "C Unexpected", "label": "Grouping mode", "hint": "Cluster = group similar signals. Random = mix signals from different areas for creative leaps.", "type": "select", "options": ["cluster", "random"], "default": "cluster", "priority": "main"},
-    "C_DIVERSITY_MAX_PCT":          {"section": "C Unexpected", "label": "Max % per theme", "hint": "Prevent one topic from dominating. E.g., 40 = no single theme > 40% of results.", "type": "number", "min": 10, "max": 100, "default": 40, "priority": "advanced"},
-    "C_SCORE_UNEXPECTEDNESS":       {"section": "C Unexpected", "label": "Min. Unexpectedness", "hint": "How surprising must the scenario be? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
-    "C_SCORE_SOCIAL_IMPACT":        {"section": "C Unexpected", "label": "Min. Social Impact", "hint": "Must have potential societal impact? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
-    "C_SCORE_UNCERTAINTY":          {"section": "C Unexpected", "label": "Min. Uncertainty", "hint": "Must be hard to predict? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
+    "C_GENERATE_N":                 {"section": "C Unexpected", "label": "Number of scenarios to deliver", "hint": "Final number of unexpected scenarios shown to the client. The system over-generates candidates and then picks the most representative ones for diversity.", "type": "number", "min": 5, "max": 100, "default": 10, "priority": "main"},
+    "C_MODE":                       {"section": "C Unexpected", "label": "How to combine signals", "hint": "Single theme = each scenario stays on one topic (safest, most coherent). Collide two themes = pair up different theme groups for cross-domain ideas (recommended). Mix random signals = any 2 unrelated signals forced together (wildest, least grounded).", "type": "select", "options": {"cluster": "Single theme (safest)", "cluster_pair": "Collide two themes (recommended)", "signal_pair": "Mix random signals (wildest)"}, "default": "cluster_pair", "priority": "main"},
+    "C_WEIGHT_UNEXPECTEDNESS":      {"section": "C Unexpected", "label": "Weight: Unexpectedness", "hint": "Outside normal forecasts or mainstream discussions, AND on a personal level, ideas that hardly come to mind in one's daily life and are hard to envision.", "type": "number", "min": 0, "max": 10, "default": 1, "priority": "advanced"},
+    "C_WEIGHT_SOCIAL_IMPACT":       {"section": "C Unexpected", "label": "Weight: Social Impact", "hint": "Changes how most people live or how society functions.", "type": "number", "min": 0, "max": 10, "default": 1, "priority": "advanced"},
+    "C_WEIGHT_UNCERTAINTY":         {"section": "C Unexpected", "label": "Weight: Uncertainty", "hint": "Hard to anticipate, evaluate, or verify the likelihood — even an expert cannot determine whether the event will occur.", "type": "number", "min": 0, "max": 10, "default": 1, "priority": "advanced"},
 
     # ── D ──
-    "D_GENERATE_N":                 {"section": "D Opportunity", "label": "Number of pairs to generate", "hint": "How many A x C combinations to explore. Recommended: 30-40.", "type": "number", "min": 5, "max": 100, "default": 40, "priority": "main"},
-    "D_MODE":                       {"section": "D Opportunity", "label": "Pairing mode", "hint": "Hybrid = AI picks best pairs. Random = random combinations for creative exploration.", "type": "select", "options": ["hybrid", "random"], "default": "hybrid", "priority": "main"},
-    "D_MATRIX_MODE":                {"section": "D Opportunity", "label": "Matrix classification", "hint": "Classify results into Unexpectedness x Impact quadrants (Breakthrough / Surprising / Incremental).", "type": "bool", "default": True, "priority": "main"},
-    "D_SCORE_COLLISION":            {"section": "D Opportunity", "label": "Min. Collision Novelty", "hint": "How non-obvious must the A x C combination be? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 0, "priority": "advanced"},
-    "D_SCORE_UNEXPECTED":           {"section": "D Opportunity", "label": "Min. Unexpectedness", "hint": "How surprising must the opportunity be? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
-    "D_SCORE_IMPACT":               {"section": "D Opportunity", "label": "Min. Business Impact", "hint": "How big must the revenue/competitive impact be? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
-    "D_SCORE_PLAUSIBILITY":         {"section": "D Opportunity", "label": "Min. Plausibility", "hint": "Must be realistically possible in 10-15 years? (0 = no filter)", "type": "number", "min": 0, "max": 10, "default": 5, "priority": "advanced"},
-    "D_SCORE_TOPIC_RELEVANCE":      {"section": "D Opportunity", "label": "Min. Topic Relevance", "hint": "Must be related to the research topic? (0 = allow all)", "type": "number", "min": 0, "max": 10, "default": 0, "priority": "advanced"},
-    "D_TOPIC_RELEVANCE_CAP":        {"section": "D Opportunity", "label": "Strict topic filter", "hint": "If ON, opportunities barely related to the topic are heavily penalized.", "type": "bool", "default": False, "priority": "advanced"},
+    "D_GENERATE_N":                 {"section": "D Opportunity", "label": "Number of opportunities to deliver", "hint": "Final number of opportunity scenarios shown to the client. The system over-generates candidates and then picks the most representative ones for diversity.", "type": "number", "min": 5, "max": 30, "default": 10, "priority": "main"},
+    "D_MATRIX_MODE":                {"section": "D Opportunity", "label": "Matrix classification", "hint": "Plot opportunities on an Unexpectedness × Business Impact chart and tag each one as Breakthrough, Surprising, Incremental, or Low Priority. Adds the matrix view to the Results tab.", "type": "bool", "default": True, "priority": "main"},
+    "D_WEIGHT_UNEXPECTED":          {"section": "D Opportunity", "label": "Weight: Unexpectedness", "hint": "Not included in research outputs that determine current business strategies.", "type": "number", "min": 0, "max": 10, "default": 1, "priority": "advanced"},
+    "D_WEIGHT_IMPACT":              {"section": "D Opportunity", "label": "Weight: Business Impact", "hint": "Could significantly change revenue structure or competitive advantage.", "type": "number", "min": 0, "max": 10, "default": 1, "priority": "advanced"},
+    "D_WEIGHT_PLAUSIBILITY":        {"section": "D Opportunity", "label": "Weight: Plausibility", "hint": "How realistically the opportunity could happen in 10-15 years.", "type": "number", "min": 0, "max": 10, "default": 1, "priority": "advanced"},
 }
 
 
@@ -264,49 +263,33 @@ def apply_overrides(overrides: dict):
         # A1
         elif key == "A1_GENERATE_N":
             cfg_module.A1_GENERATE_N = int(val)
-        elif key.startswith("A1_SCORE_"):
-            dim = "score_" + key[len("A1_SCORE_"):].lower()
-            cfg_module.A1_MIN_DIM_SCORES[dim] = int(val)
-        elif key == "A1_TOPIC_RELEVANCE_CAP":
-            cfg_module.A1_TOPIC_RELEVANCE_CAP = bool(val)
+        elif key.startswith("A1_WEIGHT_"):
+            dim = key[len("A1_WEIGHT_"):].lower()
+            cfg_module.A1_WEIGHTS[dim] = float(val)
 
         # B
         elif key == "B_TOP_N":
             cfg_module.B_TOP_N = int(val)
-        elif key.startswith("B_SCORE_"):
-            dim = key[len("B_SCORE_"):].lower()
-            cfg_module.B_MIN_DIM_SCORES[dim] = int(val)
-        elif key == "B_TOPIC_RELEVANCE_CAP":
-            cfg_module.B_TOPIC_RELEVANCE_CAP = bool(val)
+        elif key.startswith("B_WEIGHT_"):
+            dim = key[len("B_WEIGHT_"):].lower()
+            cfg_module.B_WEIGHTS[dim] = float(val)
 
         # C
         elif key == "C_GENERATE_N":
             cfg_module.C_GENERATE_N = int(val)
         elif key == "C_MODE":
             cfg_module.C_MODE = val
-        elif key == "C_DIVERSITY_MAX_PCT":
-            cfg_module.C_DIVERSITY_MAX_PCT = int(val)
-        elif key.startswith("C_SCORE_"):
-            dim = "score_" + key[len("C_SCORE_"):].lower()
-            cfg_module.C_MIN_DIM_SCORES[dim] = int(val)
+        elif key.startswith("C_WEIGHT_"):
+            dim = key[len("C_WEIGHT_"):].lower()
+            cfg_module.C_WEIGHTS[dim] = float(val)
 
         # D
         elif key == "D_GENERATE_N":
             cfg_module.D_GENERATE_N = int(val)
         elif key == "D_MODE":
             cfg_module.D_MODE = val
-        elif key.startswith("D_SCORE_"):
-            dim = key[len("D_SCORE_"):].lower() + "_score"
-            # Handle naming: collision_score, unexpected_score, etc.
-            dim_map = {
-                "collision_score": "collision_score",
-                "unexpected_score": "unexpected_score",
-                "impact_score": "impact_score",
-                "plausibility_score": "plausibility_score",
-                "topic_relevance_score": "topic_relevance_score",
-            }
-            cfg_module.D_MIN_DIM_SCORES[dim_map.get(dim, dim)] = int(val)
-        elif key == "D_TOPIC_RELEVANCE_CAP":
-            cfg_module.D_TOPIC_RELEVANCE_CAP = bool(val)
+        elif key.startswith("D_WEIGHT_"):
+            dim = key[len("D_WEIGHT_"):].lower() + "_score"
+            cfg_module.D_WEIGHTS[dim] = float(val)
         elif key == "D_MATRIX_MODE":
             cfg_module.D_MATRIX_MODE = bool(val)

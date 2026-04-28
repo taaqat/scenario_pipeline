@@ -10,6 +10,7 @@ Phase 3: Rank, gate filter, and review all candidates
 import json
 import logging
 import threading
+import hashlib
 from itertools import product
 from pathlib import Path
 
@@ -21,11 +22,96 @@ from utils.openai_client import get_openai_client
 from utils.data_io import (
     read_json, save_json, save_excel, chunk_list,
     load_prompt, unwrap_rankings, apply_scores, save_checkpoint_if_due,
-    rank_and_select, llm_review, enforce_gate,
+    rank_and_select, pick_final,
+    compute_pool_size,
 )
 from utils.bilingual import save_split, translate_to_zh, strip_zh
 
 logger = logging.getLogger(__name__)
+
+
+def _d_pool_n() -> int:
+    return compute_pool_size(cfg.D_GENERATE_N, cfg.D_OVERGEN_FACTOR, cfg.D_GENERATE_CAP)
+
+
+def _d_phase2_signature(pairs: list[dict]) -> str:
+    """Build a stable signature for D-Phase2 inputs + runtime context."""
+    compact_pairs = [
+        {
+            "pair_id": str(p.get("pair_id", i + 1)),
+            "expected_ids": [str(aid) for aid in p.get("expected_ids", [])],
+            "unexpected_ids": [str(cid) for cid in p.get("unexpected_ids", [])],
+            "generation_mode": str(p.get("generation_mode", "")),
+        }
+        for i, p in enumerate(pairs)
+    ]
+    cp = getattr(cfg, "CLIENT_PROFILE", {}) or {}
+    context = {
+        "topic": str(getattr(cfg, "TOPIC", "") or ""),
+        "timeframe": str(getattr(cfg, "TIMEFRAME", "") or ""),
+        "industries": [str(x) for x in (cp.get("industries") or [])],
+        "output_language": str(getattr(cfg, "OUTPUT_LANGUAGE", "") or ""),
+        # D Phase2 generation prompt consumes writing style + target industries.
+        "writing_style": str(getattr(cfg, "WRITING_STYLE", "") or ""),
+    }
+    payload = json.dumps(
+        {"pairs": compact_pairs, "context": context},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _save_d_phase2_checkpoint(
+    checkpoint_path: Path,
+    completed: dict[int, dict],
+    total_pairs: int,
+    pairs_signature: str,
+):
+    save_json(
+        {
+            "meta": {
+                "total_pairs": total_pairs,
+                "pairs_signature": pairs_signature,
+            },
+            "results": {str(k): v for k, v in completed.items()},
+        },
+        checkpoint_path,
+    )
+
+
+def _scenario_title(s: dict) -> str:
+    return (
+        s.get("title")
+        or s.get("title_ja")
+        or s.get("opportunity_title")
+        or s.get("opportunity_title_ja")
+        or ""
+    )
+
+
+def _normalize_selected_refs(raw_refs, valid_map: dict[str, dict]) -> list[dict]:
+    """Keep only references that exist in the current source maps, with clean titles."""
+    refs: list[dict] = []
+    seen: set[str] = set()
+
+    if isinstance(raw_refs, dict):
+        raw_refs = [raw_refs]
+    if not isinstance(raw_refs, list):
+        raw_refs = []
+
+    for ref in raw_refs:
+        if not isinstance(ref, dict):
+            continue
+        rid = str(ref.get("id", "")).strip()
+        if not rid or rid in seen or rid not in valid_map:
+            continue
+        refs.append({"id": rid, "title": _scenario_title(valid_map[rid])})
+        seen.add(rid)
+
+    return refs
+
+
 
 
 # ── Phase 1: Select best A×C pairs ───────────────────
@@ -43,7 +129,7 @@ def phase1_select_pairs(
     llm.set_step("D-select-pairs")
     prompt_tpl = load_prompt("d_phase1_select_pairs.txt")
 
-    num_pairs = cfg.D_GENERATE_N
+    num_pairs = _d_pool_n()
     num_a, num_c = len(expected), len(unexpected)
     # Diversity caps — generous enough that LLM won't refuse
     max_per_a = max(5, (num_pairs * 3) // num_a + 1) if num_a else 5
@@ -80,10 +166,20 @@ def phase1_select_pairs(
               .replace("{target_industries}", target_industries)
               .replace("{output_language}", cfg.OUTPUT_LANGUAGE))
 
-    # Try up to 2 times — LLM sometimes returns error analysis instead of pairs
+    # Try up to 2 times — LLM sometimes returns error analysis instead of pairs.
+    # Keep `original_prompt` immutable so each retry uses a deterministic input.
+    original_prompt = prompt
+    retry_preamble = (
+        "IGNORE ALL PREVIOUS CONSTRAINT ANALYSIS. This is NOT a math problem.\n"
+        "You MUST output a JSON object with a \"pairs\" key containing an array.\n"
+        "Do NOT output any error messages, feasibility analysis, or explanations.\n"
+        "If constraints seem tight, just do your best — approximate solutions are fine.\n"
+        "Coverage is a SOFT GOAL, not a hard requirement.\n\n"
+    )
     pairs = None
     for attempt in range(1, 3):
-        result = llm.call_json(prompt, model=cfg.RANK_MODEL, max_tokens=16384)
+        attempt_prompt = original_prompt if attempt == 1 else retry_preamble + original_prompt
+        result = llm.call_json(attempt_prompt, model=cfg.RANK_MODEL, max_tokens=16384)
 
         # OpenAI response_format=json_object always returns dict; unwrap to list
         if isinstance(result, dict):
@@ -96,15 +192,6 @@ def phase1_select_pairs(
                 logger.warning(
                     f"Phase 1 attempt {attempt}: LLM returned error/analysis instead of pairs. "
                     f"Keys: {list(result.keys())}. Retrying with forceful prompt..."
-                )
-                # Override prompt with a much stronger instruction for retry
-                prompt = (
-                    "IGNORE ALL PREVIOUS CONSTRAINT ANALYSIS. This is NOT a math problem.\n"
-                    "You MUST output a JSON object with a \"pairs\" key containing an array.\n"
-                    "Do NOT output any error messages, feasibility analysis, or explanations.\n"
-                    "If constraints seem tight, just do your best — approximate solutions are fine.\n"
-                    "Coverage is a SOFT GOAL, not a hard requirement.\n\n"
-                    + prompt
                 )
                 continue
             pairs = next((v for v in result.values() if isinstance(v, list)), [])
@@ -189,6 +276,9 @@ def phase1_select_pairs(
     else:
         logger.info(f"  C coverage check passed: all {len(all_c_ids)} C scenarios used")
 
+    for p in pairs:
+        p.setdefault("generation_mode", "select_pairs")
+        p.setdefault("generation_n", num_pairs)
     save_json(pairs, cfg.INTERMEDIATE_DIR / "d_phase1_pairs.json")
     logger.info(f"Phase 1 done: {len(pairs)} pairs selected")
     return pairs
@@ -207,19 +297,29 @@ def phase1_random_pairs(
     if unexpected is None:
         unexpected = read_json(cfg.OUTPUT_DIR / "C_unexpected_scenarios_ja.json")
 
-    num_pairs = cfg.D_GENERATE_N
+    if not expected or not unexpected:
+        raise ValueError(
+            f"Cannot pair: need both Expected (got {len(expected)}) and Unexpected (got {len(unexpected)}). "
+            "Re-run A1 and C first."
+        )
+
+    num_pairs = _d_pool_n()
     pairs = []
+    # Fixed shape: 1 A x 2 C per pair. Prior 1-3 x 1-3 randomness
+    # produced 6-source pairs that forced the LLM to pad with tangentially
+    # related C scenarios. Min 1A+2C keeps collisions clean.
+    n_a = 1
+    n_c = 2 if len(unexpected) >= 2 else 1
     for i in range(num_pairs):
-        # Pick 2-3 random A and 2-3 random C for each pair
-        n_a = random.randint(2, min(3, len(expected)))
-        n_c = random.randint(2, min(3, len(unexpected)))
-        sampled_a = random.sample(expected, n_a)
-        sampled_c = random.sample(unexpected, n_c)
+        sampled_a = random.sample(expected, min(n_a, len(expected)))
+        sampled_c = random.sample(unexpected, min(n_c, len(unexpected)))
         pairs.append({
             "pair_id": i + 1,
             "expected_ids": [a.get("scenario_id") for a in sampled_a],
             "unexpected_ids": [c.get("scenario_id") for c in sampled_c],
             "collision_hypothesis_ja": "",
+            "generation_mode": "random",
+            "generation_n": num_pairs,
         })
 
     logger.info(f"Random mode: {num_pairs} random pairs from {len(expected)}A × {len(unexpected)}C")
@@ -244,6 +344,8 @@ def matrix_all_pairs(
             "expected_ids": [a.get("scenario_id")],
             "unexpected_ids": [c.get("scenario_id")],
             "collision_hypothesis_ja": "",  # no pre-hypothesis in matrix mode
+            "generation_mode": "matrix",
+            "generation_n": len(expected) * len(unexpected),
         })
 
     logger.info(f"Matrix mode: {len(pairs)} pairs ({len(expected)}A × {len(unexpected)}C)")
@@ -289,6 +391,17 @@ def _is_pairs_checkpoint_fresh(
     if mode == "matrix" and len(pairs) != len(expected) * len(unexpected):
         return False
 
+    # Mode mismatch: cached pairs produced by a different mode are not reusable.
+    pair_modes = {str(p.get("generation_mode", "")) for p in pairs}
+    if pair_modes and pair_modes != {mode}:
+        return False
+
+    # Pair count mismatch (random / select_pairs): cached N != current pool_n.
+    if mode in ("random", "select_pairs"):
+        expected_pool_n = _d_pool_n()
+        if len(pairs) != expected_pool_n:
+            return False
+
     # Cached pairs must be newer than source A/C files.
     try:
         a_path = cfg.OUTPUT_DIR / "A1_expected_scenarios_ja.json"
@@ -316,6 +429,19 @@ def phase2_generate(
     if unexpected is None:
         unexpected = read_json(cfg.OUTPUT_DIR / "C_unexpected_scenarios_ja.json")
 
+    if not expected:
+        raise RuntimeError(
+            "Step D requires A1 output but A1_expected_scenarios_ja.json is missing or empty — run Step A1 first."
+        )
+    if not unexpected:
+        raise RuntimeError(
+            "Step D requires C output but C_unexpected_scenarios_ja.json is missing or empty — run Step C first."
+        )
+    if not pairs:
+        raise RuntimeError(
+            "Step D has no pairs to process — Phase 1 produced an empty list. Re-run D Phase 1 or check logs."
+        )
+
     # Build lookup maps
     a_map = {a.get("scenario_id"): a for a in expected}
     c_map = {c.get("scenario_id"): c for c in unexpected}
@@ -337,6 +463,7 @@ def phase2_generate(
     )
 
     total_pairs = len(pairs)
+    pairs_signature = _d_phase2_signature(pairs)
     indexed_pairs = [(i, pair) for i, pair in enumerate(pairs)]
 
     # ── Checkpoint ──────────────────────────────────
@@ -345,9 +472,17 @@ def phase2_generate(
     if checkpoint_path.exists():
         try:
             ckpt = read_json(checkpoint_path)
-            saved_results = ckpt.get("results") or ckpt.get("batch_results") or {}
-            completed = {int(k): v for k, v in saved_results.items()}
-            logger.info(f"  D-Phase2 checkpoint: {len(completed)}/{total_pairs} done")
+            meta = ckpt.get("meta", {}) if isinstance(ckpt, dict) else {}
+            saved_sig = meta.get("pairs_signature")
+            saved_total = meta.get("total_pairs")
+            if saved_sig != pairs_signature or saved_total != total_pairs:
+                logger.info(
+                    "  D-Phase2 checkpoint is stale (pairs changed) - starting fresh"
+                )
+            else:
+                saved_results = ckpt.get("results") or ckpt.get("batch_results") or {}
+                completed = {int(k): v for k, v in saved_results.items()}
+                logger.info(f"  D-Phase2 checkpoint: {len(completed)}/{total_pairs} done")
         except Exception:
             logger.warning("  D-Phase2 checkpoint load failed — starting fresh")
 
@@ -392,7 +527,13 @@ def phase2_generate(
         with ckpt_lock:
             if result and isinstance(result, dict):
                 completed[abs_idx] = result
-            save_checkpoint_if_due(completed, checkpoint_path, total_pairs, record_key="results")
+            if len(completed) % 10 == 0 or len(completed) == total_pairs:
+                _save_d_phase2_checkpoint(
+                    checkpoint_path,
+                    completed,
+                    total_pairs,
+                    pairs_signature,
+                )
 
     if remaining:
         llm.concurrent_batch_call(
@@ -404,17 +545,62 @@ def phase2_generate(
             on_item_done=on_done,
             temperature=0.75,  # Higher temp for creative opportunity generation
         )
-        save_json({"results": {str(k): v for k, v in completed.items()}}, checkpoint_path)
+        _save_d_phase2_checkpoint(
+            checkpoint_path,
+            completed,
+            total_pairs,
+            pairs_signature,
+        )
     else:
         logger.info("  All D-Phase2 pairs complete — assembling from checkpoint")
 
-    all_scenarios = [completed[i] for i in range(total_pairs) if i in completed]
+    pair_map = {i: pairs[i] for i in range(total_pairs)}
+    all_scenarios = []
+    for i in range(total_pairs):
+        if i not in completed:
+            continue
+        item = completed[i]
+        if not isinstance(item, dict):
+            continue
+        s = dict(item)
+        pair = pair_map.get(i, {})
+        s["_pair_expected_ids"] = [str(aid) for aid in pair.get("expected_ids", [])]
+        s["_pair_unexpected_ids"] = [str(cid) for cid in pair.get("unexpected_ids", [])]
+        all_scenarios.append(s)
+
     failed_pairs = [i for i in range(total_pairs) if i not in completed]
     if failed_pairs:
         logger.warning(
             f"⚠ D-Phase2: {len(failed_pairs)}/{total_pairs} pairs failed to generate scenarios: "
             f"{failed_pairs[:10]}{'...' if len(failed_pairs) > 10 else ''}"
         )
+
+    # Normalize selected references to current A/C outputs.
+    min_c_needed = 2 if len(c_map) >= 2 else (1 if c_map else 0)
+    for s in all_scenarios:
+        selected_a = _normalize_selected_refs(s.get("selected_expected"), a_map)
+        selected_c = _normalize_selected_refs(s.get("selected_unexpected"), c_map)
+
+        pair_a_ids = [aid for aid in s.pop("_pair_expected_ids", []) if aid in a_map]
+        pair_c_ids = [cid for cid in s.pop("_pair_unexpected_ids", []) if cid in c_map]
+
+        if not selected_a:
+            for aid in pair_a_ids:
+                selected_a.append({"id": aid, "title": _scenario_title(a_map[aid])})
+                break
+
+        if min_c_needed > 0 and len(selected_c) < min_c_needed:
+            seen_c = {x.get("id") for x in selected_c}
+            for cid in pair_c_ids:
+                if cid in seen_c:
+                    continue
+                selected_c.append({"id": cid, "title": _scenario_title(c_map[cid])})
+                seen_c.add(cid)
+                if len(selected_c) >= min_c_needed:
+                    break
+
+        s["selected_expected"] = selected_a
+        s["selected_unexpected"] = selected_c
 
     # Enforce stable sequential IDs for downstream ranking/traceability
     for idx, s in enumerate(all_scenarios, 1):
@@ -577,7 +763,7 @@ def phase3_rank(scenarios: list[dict] = None) -> list[dict]:
     llm = get_openai_client()
     llm.set_step("D-rank")
 
-    D_DIMS = ["collision_score", "unexpected_score", "impact_score", "plausibility_score", "topic_relevance_score"]
+    D_DIMS = ["unexpected_score", "impact_score", "plausibility_score"]  # all 3 weighted
 
     d_summary_fn = lambda s: {
         "scenario_id": s.get("scenario_id"),
@@ -598,23 +784,36 @@ def phase3_rank(scenarios: list[dict] = None) -> list[dict]:
             "output_language": cfg.OUTPUT_LANGUAGE,
         },
         step_label="D-Phase3",
-        min_dim_scores=cfg.D_MIN_DIM_SCORES,
+        weights=cfg.D_WEIGHTS,
     )
 
-    # LLM global review for duplicates, theme overlap & weak collision
-    final = llm_review(
-        final, llm, cfg.RANK_MODEL,
-        step="D",
-        summary_fn=d_summary_fn,
-        prompt_vars={
-            "topic": cfg.TOPIC,
-            "target_industries": ", ".join(cfg.CLIENT_PROFILE.get("industries", cfg.CLIENT_PROFILE.get("industries_ja", []))),
-            "output_language": cfg.OUTPUT_LANGUAGE,
-        },
-        step_label="D-Phase3",
+    # total_score = sum of all 3 dims (matches LLM-returned total). Matrix axes
+    # remain Unexpectedness × Impact only — plausibility contributes to ranking
+    # but not to the visual quadrant placement.
+    for s in scenarios:
+        u = s.get("unexpected_score", 0) or 0
+        i = s.get("impact_score", 0) or 0
+        p = s.get("plausibility_score", 0) or 0
+        s["total_score"] = u + i + p
+
+    final = pick_final(
+        final, k=cfg.D_GENERATE_N, llm=llm, model=cfg.RANK_MODEL,
+        fields=["opportunity_title_ja", "collision_insight_ja", "background_ja", "implications_for_company_ja"],
+        topic=cfg.TOPIC, step_label="D-Phase3",
     )
 
-    final = enforce_gate(final, cfg.D_MIN_DIM_SCORES, step_label="D-Phase3")
+    for s in final:
+        u = s.get("unexpected_score", 0) or 0
+        i = s.get("impact_score", 0) or 0
+        p = s.get("plausibility_score", 0) or 0
+        s["total_score"] = u + i + p
+
+    final.sort(key=lambda s: (
+        -(s.get("total_score", 0) or 0),
+        -(s.get("impact_score", 0) or 0),
+        -(s.get("plausibility_score", 0) or 0),
+        str(s.get("scenario_id", "")),
+    ))
 
     # Translate and save
     if getattr(cfg, "TRANSLATE_ENABLED", False):
@@ -631,11 +830,10 @@ def phase3_rank(scenarios: list[dict] = None) -> list[dict]:
         {
             "scenario_id": s.get("scenario_id"),
             "total_score": s.get("total_score", 0),
-            "collision_score": s.get("collision_score", 0),
+            "weighted_score": s.get("weighted_score", 0),
             "unexpected_score": s.get("unexpected_score", 0),
             "impact_score": s.get("impact_score", 0),
             "plausibility_score": s.get("plausibility_score", 0),
-            "topic_relevance_score": s.get("topic_relevance_score", 0),
             "opportunity_title_ja": s.get("opportunity_title_ja", ""),
             "opportunity_title_zh": s.get("opportunity_title_zh", ""),
             "selected_expected": "\n".join(
@@ -673,15 +871,23 @@ def phase3_rank(scenarios: list[dict] = None) -> list[dict]:
     save_excel(df, cfg.OUTPUT_DIR / "D_opportunity_scenarios.xlsx")
 
     # Matrix classification: Unexpectedness × Impact
-    if getattr(cfg, "D_MATRIX_MODE", False):
+    # Thresholds are the MEDIANS of the selected set — matches JRI's "map of the
+    # creative landscape" intent (relative positioning), not a fixed absolute cutoff.
+    # Guard: need at least 3 scenarios for meaningful median-based quadrant split.
+    if getattr(cfg, "D_MATRIX_MODE", False) and len(final) >= 3:
+        import statistics
+        u_vals = [s.get("unexpected_score", 0) or 0 for s in final]
+        i_vals = [s.get("impact_score", 0) or 0 for s in final]
+        u_mid = statistics.median(u_vals)
+        i_mid = statistics.median(i_vals)
         for s in final:
-            u = s.get("unexpected_score", 0)
-            i = s.get("impact_score", 0)
-            if u >= 6 and i >= 6:
+            u = s.get("unexpected_score", 0) or 0
+            i = s.get("impact_score", 0) or 0
+            if u >= u_mid and i >= i_mid:
                 s["matrix_quadrant"] = "breakthrough"
-            elif u >= 6 and i < 6:
+            elif u >= u_mid and i < i_mid:
                 s["matrix_quadrant"] = "surprising"
-            elif u < 6 and i >= 6:
+            elif u < u_mid and i >= i_mid:
                 s["matrix_quadrant"] = "incremental"
             else:
                 s["matrix_quadrant"] = "low_priority"
@@ -692,6 +898,8 @@ def phase3_rank(scenarios: list[dict] = None) -> list[dict]:
                     f"{sum(1 for s in final if s.get('matrix_quadrant')=='surprising')} surprising, "
                     f"{sum(1 for s in final if s.get('matrix_quadrant')=='incremental')} incremental, "
                     f"{sum(1 for s in final if s.get('matrix_quadrant')=='low_priority')} low_priority")
+    elif getattr(cfg, "D_MATRIX_MODE", False):
+        logger.info(f"Matrix classification skipped: need ≥3 scenarios, got {len(final)}")
 
     logger.info(f"Phase 3 done: {len(final)} scenarios written to output after gate filter and review")
     return final

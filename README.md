@@ -65,11 +65,6 @@ python3 run_pipeline.py --step a1 --phase 1   # summarize articles
 python3 run_pipeline.py --step a1 --phase 2   # cluster into themes
 python3 run_pipeline.py --step a1 --phase 3   # generate scenarios
 python3 run_pipeline.py --step a1 --phase 4   # rank, gate filter, global review
-
-# Re-run ranking only on existing generated pools
-python3 rerank.py A
-python3 rerank.py C --limit 100
-python3 rerank.py D --no-translate
 ```
 
 ## Models Used
@@ -77,12 +72,12 @@ python3 rerank.py D --no-translate
 | Step | Task | Model |
 |------|------|-------|
 | A1 Phase 1 | Article summarize | Claude Haiku 4.5 |
-| A1 Phase 2 | K-Means cluster labeling | Claude Opus 4.6 |
+| A1 Phase 2 | BERTopic (UMAP+HDBSCAN) cluster labeling | Claude Opus 4.6 |
 | A1 Phase 3 | Scenario generation | Claude Opus 4.6 |
 | A1 Phase 4 | Ranking + review | gpt-5.2 |
 | B Phase 1 | Signal scoring | gpt-5.2 |
 | B Phase 3 | Diversity dedup | gpt-5.2 |
-| C Phase 1 | K-Means cluster labeling | Claude Opus 4.6 |
+| C Phase 1 | BERTopic (UMAP+HDBSCAN) cluster labeling | Claude Opus 4.6 |
 | C Phase 2 | Scenario generation | Claude Opus 4.6 |
 | C Phase 3 | Ranking + review | gpt-5.2 |
 | D Phase 1 | Pair selection | Claude Opus 4.6 |
@@ -109,7 +104,6 @@ scenario_pipeline/
 │   ├── jri_aging.py        # Topic: JRI 高齡化社會
 │   └── energy.py           # Topic: 電力永續
 ├── run_pipeline.py
-├── rerank.py
 ├── app.py                  # Web UI
 ├── prompts/
 │   ├── a1_phase1_summarize.txt

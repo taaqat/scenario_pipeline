@@ -1,12 +1,9 @@
-You are a weak signal analysis expert. Score each of the following weak signals on 4 dimensions.
+You are a weak signal analysis expert. Score each of the following weak signals on 3 dimensions.
 
 # Project Topic: {topic}
 
 # Client Profile
 {client_profile}
-
-# Expected Scenarios from Step A-1 (EXCLUSION reference — overlapping signals score LOW)
-{expected_themes}
 
 # Selection Criteria
 - Focus on 'the outside area' and weak signals that clients may not know but may have a major impact on society.
@@ -16,14 +13,14 @@ You are a weak signal analysis expert. Score each of the following weak signals 
 
 # Scoring Dimensions (1-10 each)
 
-1. **outside_area**: Is this signal outside the perspective of the client company's employees — areas they normally investigate?
-   - 8-10 = Completely outside — originates from a field the client never monitors (e.g., "3D printing of organs", "space tourism for elderly")
-   - 4-7 = Adjacent to known domains but from an unfamiliar angle (e.g., "elderly social media behavior" — adjacent to senior consumer market but from a digital culture angle)
-   - 1-3 = Directly within the client's known domains (e.g., "nursing staff shortage", "pension reform" — standard topics in {known_domains})
+1. **outside_area**: Is this signal information outside the perspective of the client company's employees — the areas they normally investigate? Use the Client Profile above to judge what those normal investigation areas are.
+   - 8-10 = Clearly outside what client employees would normally look at — would surprise an analyst inside the company
+   - 4-7 = On the edge of client employees' normal scope — adjacent or tangential
+   - 1-3 = Squarely within what client employees already investigate every day
 
-2. **novelty**: Is this entirely NEW / UNHEARD-OF information to the client?
-   - 8-10 = Completely unknown — e.g., foreign lifestyle changes, niche subcultures, emerging tech from unrelated fields
-   - 4-7 = Somewhat known in adjacent industries
+2. **novelty**: Is this information entirely new or unheard-of to the clients (e.g. lifestyle changes abroad, emerging behaviours from unrelated cultures, fringe practices)? Customer profile context should be used to judge novelty.
+   - 8-10 = Completely unknown to the clients — foreign lifestyle changes, niche subcultures, tech from unrelated fields
+   - 4-7 = Somewhat known in adjacent industries or specialist circles
    - 1-3 = Common knowledge in the client's known domains ({known_domains})
 
 3. **social_impact**: Could this affect broad social dimensions if developed?
@@ -31,36 +28,32 @@ You are a weak signal analysis expert. Score each of the following weak signals 
    - 4-7 = Moderate impact on specific groups
    - 1-3 = Minimal or localized impact
 
-4. **topic_relevance** (OPTIONAL — score even if threshold is 0, for reference):
-   Can this signal be connected (even indirectly) to {topic}?
-   - 8-10 = Strong, direct connection
-   - 4-7 = Indirect but plausible connection
-   - 1-3 = No conceivable connection
-
 # IMPORTANT RULES
-- Signals that overlap with A-1 Expected Scenarios → LOW outside_area score
-- Signals within client's known domains ({known_domains}) → LOW novelty score
+- Signals well within the client employees' normal investigation areas → LOW outside_area
+- Signals already common knowledge to the clients → LOW novelty
 - Diversity filtering will be done in a separate step — focus purely on individual signal quality here
 
 # IMPORTANT SCORING RULES
-- total_score MUST equal outside_area + novelty + social_impact + topic_relevance (max 40).
+- total_score MUST equal outside_area + novelty + social_impact (max 30).
 
-# Output — respond ONLY with a JSON array, no other text
+# Output — respond ONLY with a JSON object, no other text
+# Top-level key MUST be "signals".
 ```json
-[
-  {{
-    "signal_id": "JRI ID from the data",
-    "title_ja": "signal title (Japanese, as-is from data)",
-    "scores": {{
-      "outside_area": 7,
-      "novelty": 9,
-      "social_impact": 6,
-      "topic_relevance": 5
-    }},
-    "total_score": 27,
-    "reasoning_ja": "スコアの根拠（1-2文）"
-  }}
-]
+{
+  "signals": [
+    {{
+      "signal_id": "JRI ID from the data",
+      "title_ja": "signal title (Japanese, as-is from data)",
+      "scores": {{
+        "outside_area": 7,
+        "novelty": 9,
+        "social_impact": 6
+      }},
+      "total_score": 22,
+      "reasoning_ja": "スコアの根拠（1-2文）"
+    }}
+  ]
+}
 ```
 
 # Weak Signal Data (Title, Description, Tags, Region)

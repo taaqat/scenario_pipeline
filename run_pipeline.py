@@ -29,42 +29,38 @@ from utils.data_io import save_json, read_json
 
 
 def save_cost_report():
-    """Print and save cost report, merging Claude + OpenAI costs with any existing report."""
+    """Print and save cost report for the CURRENT run only.
+
+    The Claude + OpenAI trackers are reset at the start of each run
+    (see app.run_step), so this dump captures exactly what just ran —
+    no merging with previous runs. Per-run is what users expect.
+    """
     client = get_client()
     client.tracker.print_summary()
     report = client.tracker.to_report()
 
-    # Merge OpenAI usage (Step B scoring/diversity + all translations)
+    # Merge in OpenAI usage (Step B scoring/diversity + all translations)
     openai_report = get_openai_client().cost_report()
     for step, data in openai_report.items():
         if step.startswith("_"):
             continue
         report["by_step"][step] = data
 
-    # Merge with existing report so cumulative by_step is preserved across runs
-    existing_path = cfg.OUTPUT_DIR / "cost_report.json"
-    if existing_path.exists():
-        try:
-            existing = read_json(existing_path)
-            for step, data in existing.get("by_step", {}).items():
-                if step not in report["by_step"]:
-                    report["by_step"][step] = data
-            # Recalculate totals from merged by_step
-            total_in  = sum(v["input_tokens"]  for v in report["by_step"].values())
-            total_out = sum(v["output_tokens"] for v in report["by_step"].values())
-            report["total"] = {
-                "calls":        sum(v["calls"] for v in report["by_step"].values()),
-                "input_tokens": total_in,
-                "output_tokens": total_out,
-                "total_tokens": total_in + total_out,
-                "cost_usd":     round(sum(v["cost_usd"] for v in report["by_step"].values()), 4),
-            }
-        except Exception as e:
-            logging.getLogger("pipeline").warning(f"Cost report merge failed (keeping current run data): {e}")
+    # Recompute totals from this run's by_step (don't trust the Claude-only
+    # totals from to_report() since OpenAI data was just merged in).
+    in_  = sum(v.get("input_tokens", 0)  for v in report["by_step"].values())
+    out_ = sum(v.get("output_tokens", 0) for v in report["by_step"].values())
+    report["total"] = {
+        "calls":         sum(v.get("calls", 0) for v in report["by_step"].values()),
+        "input_tokens":  in_,
+        "output_tokens": out_,
+        "total_tokens":  in_ + out_,
+        "cost_usd":      round(sum(v.get("cost_usd", 0) for v in report["by_step"].values()), 4),
+    }
 
-    save_json(report, existing_path)
+    save_json(report, cfg.OUTPUT_DIR / "cost_report.json")
     logging.getLogger("pipeline").info(
-        f"Cost report saved: {existing_path}"
+        f"Cost report saved: {cfg.OUTPUT_DIR / 'cost_report.json'}"
     )
 
 
@@ -134,12 +130,12 @@ def clear_checkpoints(step: str, phase: int = None):
     prefix_map = {
         "a1": ["a1_phase1_checkpoint", "a1_phase2_checkpoint", "a1_phase3_checkpoint"],
         "b":  ["b_phase1_checkpoint"],
-        "c":  ["c_phase1_checkpoint", "c_phase2_checkpoint"],
+        "c":  ["c_phase2_checkpoint"],
         "d":  ["d_phase1_pairs", "d_phase2_checkpoint"],
         "all": [
             "a1_phase1_checkpoint", "a1_phase2_checkpoint", "a1_phase3_checkpoint",
             "b_phase1_checkpoint",
-            "c_phase1_checkpoint", "c_phase2_checkpoint",
+            "c_phase2_checkpoint",
             "d_phase1_pairs", "d_phase2_checkpoint",
         ],
     }

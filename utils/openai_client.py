@@ -22,11 +22,12 @@ OPENAI_PRICING = {
     "gpt-5":        (2.00,  8.00),   # used by TRANSLATE_MODEL
     "gpt-5.1":      (2.00,  8.00),
     "gpt-5.2":      (1.75, 14.00),   # official: $1.75 input / $14 output
+    "gpt-5.4":      (1.75, 14.00),   # assume same as 5.2 until official pricing
     "gpt-5-mini":   (0.15,  0.60),   # update when official pricing is announced
 }
 
 # Models that only accept default temperature (1) — no custom temperature allowed
-_TEMPERATURE_FIXED_MODELS = {"gpt-5", "gpt-5.2"}
+_TEMPERATURE_FIXED_MODELS = {"gpt-5", "gpt-5.2", "gpt-5.4"}
 
 
 class OpenAIClient:
@@ -46,6 +47,11 @@ class OpenAIClient:
         self._step = name
         if name not in self._usage:
             self._usage[name] = {"calls": 0, "input": 0, "output": 0, "model": ""}
+
+    def reset_usage(self):
+        """Clear per-step usage so cost_report() reflects only what runs after this point."""
+        with self._lock:
+            self._usage = {}
 
     def _record(self, model: str, input_tok: int, output_tok: int):
         step = self._step

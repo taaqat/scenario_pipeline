@@ -21,6 +21,15 @@ Build on this hypothesis to create a full Opportunity Scenario.
 - Big company impact: Could significantly change revenue structure or competitive advantage.
 - Commercially viable: There is a clear payer (who would buy this?), an identifiable product or service, and a plausible revenue path. If you cannot name who pays, it is not an opportunity.
 
+# CRITICAL: Collision ≠ Absorption
+The Expected scenarios (A) describe a technology or capability. The Unexpected scenarios (C) describe a disruption. A good collision produces a THIRD thing — a new opportunity where the protagonist is NOT the A technology provider. If A is about electricity data, the opportunity should NOT be "electricity company gets a new customer." Instead, ask: who ELSE benefits when A meets C? The A technology is an enabler/tool, not the main character.
+
+# CRITICAL: Each cited C must be load-bearing
+For every C you list in selected_unexpected, run this test BEFORE finalizing: "Can I rewrite the collision_insight without mentioning this C, and have it still make sense?"
+- If YES → this C is decoration, not collision. DROP it from selected_unexpected.
+- If NO → this C is load-bearing (the insight collapses without it). KEEP it.
+A scenario that "borrows the shape" of a C without depending on its specific mechanism is NOT a collision — it is reuse of a familiar framing. Better to cite fewer C scenarios honestly than to cite many decoratively.
+
 # Target Industries
 The following industries are the focus of this analysis. When writing implications, approach, and transformation points, prioritize the industries most affected by this opportunity:
 {target_industries_ja}
@@ -33,9 +42,8 @@ The following industries are the focus of this analysis. When writing implicatio
 - The primary collision scenarios are provided below. You may also reference additional scenarios from the "All Available Scenarios" lists if they genuinely enrich the collision.
 
 ## Opportunity Scenario Title
-- Write ONE self-explanatory sentence that tells WHAT the opportunity is and WHY it emerges.
+- A single sentence explaining what this new opportunity is. Clear and concise, under 25 words (about 60-80 Japanese characters).
 - Structure: Cause/trigger -> resulting business opportunity (in one sentence).
-- Length: under 40 characters.
 - The title MUST match the core mechanism in the content. If content is about toilets, mention toilets.
 - Bad: title that is cryptic/metaphorical and requires reading the body to understand the opportunity
 - Bad: title-content mismatch (title says one thing but content is about something else)
@@ -103,7 +111,7 @@ ALL text fields MUST be written in {output_language}. The _ja suffix in field na
 ```json
 {{
   "scenario_id": "D-{index}",
-  "opportunity_title_ja": "Self-explanatory one-sentence title (under 40 chars, cause→opportunity, in {output_language})",
+  "opportunity_title_ja": "Self-explanatory one-sentence title (under 25 words ≈ 60-80 Japanese chars, cause→opportunity, in {output_language})",
   "selected_expected": [{{"id": "A-X", "title": "title of expected scenario"}}],
   "selected_unexpected": [{{"id": "C-Y", "title": "title of unexpected scenario"}}],
   "collision_insight_ja": "A→C→collision→opportunity explanation (4-6 sentences, 200-350 chars, in {output_language})",

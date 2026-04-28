@@ -83,9 +83,9 @@ const L = {
       "預期情境（A）描述不可逆的結構性變化；非預期情境（C）揭示弱信號驅動的意外變局；" +
       "機會情境（D）為 A × C 碰撞所產生的策略機會。每個情境附品質評分。",
     scoreLegendTitle: "評分維度說明",
-    aLegend: [["Structural Depth", "結構分析深度"], ["Irreversibility", "不可逆程度"], ["Industry Relevance", "產業相關性"], ["Topic Relevance", "主題相關性"]],
+    aLegend: [["Structural Depth", "結構分析深度"], ["Irreversibility", "不可逆程度"], ["Relevance", "相關性（合併）"], ["Feasibility", "可行性"]],
     cLegend: [["Unexpectedness", "意外程度"], ["Social Impact", "社會衝擊"], ["Uncertainty", "不確定性"]],
-    dLegend: [["Collision", "碰撞驚喜"], ["Unexpected", "意外程度"], ["Impact", "產業衝擊"], ["Plausibility", "可信度"], ["Topic Rel.", "主題相關"]],
+    dLegend: [["Unexpected", "意外程度"], ["Impact", "產業衝擊"], ["Plausibility (gate)", "可信度（闀門，不計入總分）"]],
     changeFrom: "現況（Change from）",
     changeTo: "未來（To）",
     evidence: "佐證資料（Supporting Evidences）",
@@ -135,9 +135,9 @@ const L = {
       "予想シナリオ（A）は不可逆的な構造変化を記述。予想外シナリオ（C）は弱いシグナルが駆動する意外な変局を明示。" +
       "機会シナリオ（D）はA × Cの衝突から生まれる戦略的機会。各シナリオに品質スコアを付与。",
     scoreLegendTitle: "スコア次元の説明",
-    aLegend: [["Structural Depth", "構造分析の深さ"], ["Irreversibility", "不可逆性"], ["Industry Relevance", "産業関連性"], ["Topic Relevance", "テーマ関連性"]],
+    aLegend: [["Structural Depth", "構造分析の深さ"], ["Irreversibility", "不可逆性"], ["Relevance", "関連性（統合）"], ["Feasibility", "実現可能性"]],
     cLegend: [["Unexpectedness", "意外性"], ["Social Impact", "社会的インパクト"], ["Uncertainty", "不確実性"]],
-    dLegend: [["Collision", "衝突の驚き"], ["Unexpected", "意外性"], ["Impact", "産業インパクト"], ["Plausibility", "妥当性"], ["Topic Rel.", "テーマ関連"]],
+    dLegend: [["Unexpected", "意外性"], ["Impact", "産業インパクト"], ["Plausibility (gate)", "妥当性（ゲート、総点に含まず）"]],
     changeFrom: "現状（Change from）",
     changeTo: "将来（To）",
     evidence: "裏付け資料（Supporting Evidences）",
@@ -342,8 +342,8 @@ function scoreLine(slide, d, x, y) {
   const q = d.total_score || 0;
   slide.addText(`${q}`, { x, y, w: 0.3, h: 0.24, fontSize: 9.5, bold: true, color: sc(q, 30), fontFace: F, margin: 0, valign: "middle" });
   if (d.score_structural_depth !== undefined) {
-    [["Depth", d.score_structural_depth], ["Irrev.", d.score_irreversibility], ["Industry", d.score_industry_relevance]].forEach(([l, v], i) => {
-      slide.addText(`${l} ${v}`, { x: x + 0.33 + i * 0.55, y, w: 0.53, h: 0.24, fontSize: 6.5, color: C.textLight, fontFace: F, margin: 0, valign: "middle" });
+    [["Depth", d.score_structural_depth], ["Irrev.", d.score_irreversibility], ["Ind.", d.score_industry_related], ["Topic", d.score_topic_relevance], ["Feas.", d.score_feasibility]].forEach(([l, v], i) => {
+      slide.addText(`${l} ${v}`, { x: x + 0.33 + i * 0.45, y, w: 0.43, h: 0.24, fontSize: 6.5, color: C.textLight, fontFace: F, margin: 0, valign: "middle" });
     });
   }
 }
@@ -526,7 +526,7 @@ function a1P1(d, displayIdx) {
   const displayId = String(displayIdx);
   badge(s, displayId, C.sA, 0.278, 0.15);
   const q = d.total_score || 0;
-  const scoreA = `${q}/40  |  Depth ${d.score_structural_depth||0}  Irreversib. ${d.score_irreversibility||0}  Industry ${d.score_industry_relevance||0}  Topic ${d.score_topic_relevance||0}`;
+  const scoreA = `${q}/50  |  Depth ${d.score_structural_depth||0}  Irreversib. ${d.score_irreversibility||0}  Ind. ${d.score_industry_related||0}  Topic ${d.score_topic_relevance||0}  Feas. ${d.score_feasibility||0}`;
   s.addText(scoreA, { x: 3.5, y: 0.15, w: 6.222, h: 0.24, fontSize: 8, color: "A0A0A0", fontFace: F, align: "right", valign: "middle", margin: 0 });
 
   // Title — full title
@@ -754,7 +754,7 @@ function dP1(d, displayIdx) {
   badge(s, displayId, C.sDMain, 0.278, 0.15);
 
   const ts = d.total_score || 0;
-  const scoreD = `${ts}/50  |  Collision ${d.collision_score||0}  Unexpected ${d.unexpected_score||0}  Impact ${d.impact_score||0}  Plausib. ${d.plausibility_score||0}  Topic ${d.topic_relevance_score||0}`;
+  const scoreD = `${ts}/30  |  Unexpected ${d.unexpected_score||0}  Impact ${d.impact_score||0}  Plausib. ${d.plausibility_score||0}`;
   s.addText(scoreD, { x: 3.0, y: 0.15, w: 6.246, h: 0.24, fontSize: 7.5, color: "A0A0A0", fontFace: F, align: "right", valign: "middle", margin: 0 });
   pageTag(s, "1/3", C.sDMain);
 
@@ -1000,7 +1000,7 @@ async function generateForLang(lang) {
   endSlide();
 
   const suffix = process.env.PPTX_SUFFIX || "";
-  const outPath = path.join(__dirname, "data/output", `MVP_Report_${lang}${suffix}.pptx`);
+  const outPath = path.join(BASE, `JRI_Aging_Report_${lang}${suffix}.pptx`);
   await pres.writeFile({ fileName: outPath });
   console.log(`[${lang}] Done! ${pg} slides saved to: ${outPath}`);
   return true;

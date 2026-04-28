@@ -1,11 +1,12 @@
 """
 Step B: Weak Signal Selection
 =============================
-Weak signals → batch score (4 dims) → rank → TOP N → diversity dedup → final selection
+Weak signals → batch score (3 dims) → rank → TOP N → diversity dedup → final selection
 """
 import json
 import logging
 import threading
+import hashlib
 from pathlib import Path
 
 import pandas as pd
@@ -15,11 +16,62 @@ from utils.openai_client import get_openai_client
 from utils.data_io import (
     read_input, read_json, save_json, save_excel,
     chunk_dataframe, df_to_records, chunk_list, is_valid_batch,
-    load_prompt, save_checkpoint_if_due, enforce_gate,
+    load_prompt,
 )
 from utils.bilingual import save_split, translate_to_zh
 
 logger = logging.getLogger(__name__)
+
+
+def _b_score_signature(
+    *,
+    input_file: Path,
+    input_rows: int,
+    prompt_tpl: str,
+) -> str:
+    """Hash all inputs that affect B-score prompt outputs. A1 is NOT included:
+    B scoring is independent of A1 by design (outside_area = outside industry)."""
+    cp = getattr(cfg, "CLIENT_PROFILE", {}) or {}
+    try:
+        input_mtime = input_file.stat().st_mtime
+    except OSError:
+        input_mtime = None
+
+    payload = {
+        "topic": str(getattr(cfg, "TOPIC", "") or ""),
+        "timeframe": str(getattr(cfg, "TIMEFRAME", "") or ""),
+        "client_profile": {
+            "name": str(cp.get("name", "") or ""),
+            "industries": [str(x) for x in (cp.get("industries") or [])],
+            "known_domains": [str(x) for x in (cp.get("known_domains") or [])],
+            "description": str(cp.get("description", "") or ""),
+        },
+        "input_file": str(input_file),
+        "input_rows": int(input_rows),
+        "input_mtime": input_mtime,
+        "prompt_hash": hashlib.sha1(prompt_tpl.encode("utf-8")).hexdigest(),
+        "model": str(getattr(cfg, "B_MODEL_SCORE", "") or ""),
+    }
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _save_b_score_checkpoint(
+    checkpoint_path: Path,
+    completed: dict[int, list],
+    total_batches: int,
+    score_signature: str,
+):
+    save_json(
+        {
+            "meta": {
+                "total_batches": total_batches,
+                "score_signature": score_signature,
+            },
+            "batch_results": {str(k): v for k, v in completed.items()},
+        },
+        checkpoint_path,
+    )
 
 
 def _build_client_profile_text() -> str:
@@ -32,11 +84,67 @@ def _build_client_profile_text() -> str:
     )
 
 
+def _looks_like_scored_signal(item: dict) -> bool:
+    if not isinstance(item, dict):
+        return False
+    return any(
+        k in item
+        for k in ("signal_id", "title_ja", "title", "scores", "total_score")
+    )
+
+
+def _extract_scored_signals(payload) -> list[dict]:
+    """Best-effort extraction for scored signal arrays from JSON-object outputs."""
+    if isinstance(payload, list):
+        return payload if all(isinstance(x, dict) for x in payload) else []
+    if not isinstance(payload, dict):
+        return []
+
+    # Preferred top-level keys.
+    for key in ("signals", "results", "scored", "rankings", "items"):
+        value = payload.get(key)
+        if isinstance(value, list) and all(isinstance(x, dict) for x in value):
+            return value
+
+    # Common wrapper shapes, e.g. {"data": {"signals": [...]}}
+    for key in ("data", "output", "response"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            extracted = _extract_scored_signals(nested)
+            if extracted:
+                return extracted
+
+    # Sometimes the model returns a dict keyed by signal_id.
+    dict_values = list(payload.values())
+    if dict_values and all(isinstance(v, dict) for v in dict_values):
+        if all(_looks_like_scored_signal(v) for v in dict_values):
+            return dict_values
+
+    # Last resort: search nested dicts for first plausible list[dict].
+    stack = [payload]
+    seen: set[int] = set()
+    while stack:
+        cur = stack.pop()
+        cur_id = id(cur)
+        if cur_id in seen:
+            continue
+        seen.add(cur_id)
+
+        if isinstance(cur, dict):
+            for value in cur.values():
+                if isinstance(value, list) and value and all(isinstance(x, dict) for x in value):
+                    if any(_looks_like_scored_signal(x) for x in value):
+                        return value
+                elif isinstance(value, dict):
+                    stack.append(value)
+
+    return []
+
+
 def score_signals(
     input_file: Path = None,
-    expected_scenarios: list[dict] = None,
 ) -> list[dict]:
-    """Phase 1: Score all weak signals in batches on 4 dimensions."""
+    """Phase 1: Score all weak signals in batches on 3 dimensions."""
     input_file = input_file or cfg.B_INPUT_FILE
     llm = get_openai_client()
     llm.set_step("B-score")
@@ -47,25 +155,14 @@ def score_signals(
     df = read_input(input_file, nrows=nrows)
     logger.info(f"  Total signals: {len(df)}")
 
-    # Load A-1 results for exclusion
-    if expected_scenarios is None:
-        a1_path = cfg.INTERMEDIATE_DIR / "a1_phase3_scenarios.json"
-        if a1_path.exists():
-            expected_scenarios = read_json(a1_path)
-        else:
-            logger.warning("A-1 results not found — scoring without exclusion context")
-            expected_scenarios = []
-
-    expected_themes = json.dumps(
-        [{"id": s.get("scenario_id"),
-          "title": s.get("title_ja", s.get("title", ""))}
-         for s in expected_scenarios],
-        ensure_ascii=False
-    )
-
     batches = chunk_dataframe(df, cfg.B_BATCH_SIZE)
     total_batches = len(batches)
     logger.info(f"  Batches: {total_batches} x {cfg.B_BATCH_SIZE}")
+    score_signature = _b_score_signature(
+        input_file=input_file,
+        input_rows=len(df),
+        prompt_tpl=prompt_tpl,
+    )
 
     # ── Checkpoint ──────────────────────────────────
     checkpoint_path = cfg.INTERMEDIATE_DIR / "b_phase1_checkpoint.json"
@@ -73,9 +170,15 @@ def score_signals(
     if checkpoint_path.exists():
         try:
             ckpt = read_json(checkpoint_path)
-            completed = {int(k): v for k, v in ckpt.get("batch_results", {}).items()}
-            non_empty = sum(1 for v in completed.values() if v)
-            logger.info(f"  B-score checkpoint: {non_empty}/{total_batches} batches done ({total_batches - non_empty} remaining)")
+            meta = ckpt.get("meta", {}) if isinstance(ckpt, dict) else {}
+            saved_sig = meta.get("score_signature")
+            saved_total = meta.get("total_batches")
+            if saved_sig != score_signature or saved_total != total_batches:
+                logger.info("  B-score checkpoint is stale (prompt/context changed) - starting fresh")
+            else:
+                completed = {int(k): v for k, v in ckpt.get("batch_results", {}).items()}
+                non_empty = sum(1 for v in completed.values() if v)
+                logger.info(f"  B-score checkpoint: {non_empty}/{total_batches} batches done ({total_batches - non_empty} remaining)")
         except Exception:
             logger.warning("  B-score checkpoint load failed — starting fresh")
 
@@ -92,25 +195,32 @@ def score_signals(
         return (prompt_tpl
                 .replace("{topic}", cfg.TOPIC)
                 .replace("{client_profile}", client_profile)
-                .replace("{expected_themes}", expected_themes)
                 .replace("{known_domains}", ", ".join(cfg.CLIENT_PROFILE["known_domains"]))
                 .replace("{signals}", signals_text))
 
     def on_done(flat_idx, result):
         abs_idx = remaining[flat_idx][0]
         with ckpt_lock:
-            if isinstance(result, list):
-                completed[abs_idx] = result
-            elif isinstance(result, dict):
-                # OpenAI json_object mode wraps arrays — extract the first list value
-                extracted = next((v for v in result.values() if isinstance(v, list)), None)
-                if extracted is None:
-                    logger.warning(f"  Batch {abs_idx}: LLM returned dict without list value, keys={list(result.keys())}")
-                    extracted = []
+            extracted = _extract_scored_signals(result)
+            if extracted:
                 completed[abs_idx] = extracted
             else:
+                if isinstance(result, dict):
+                    logger.warning(
+                        f"  Batch {abs_idx}: unable to extract scored signals, top-level keys={list(result.keys())}"
+                    )
+                elif result is None:
+                    logger.warning(f"  Batch {abs_idx}: LLM returned None")
+                else:
+                    logger.warning(f"  Batch {abs_idx}: unexpected LLM result type={type(result).__name__}")
                 completed[abs_idx] = []
-            save_checkpoint_if_due(completed, checkpoint_path, total_batches)
+            if len(completed) % 10 == 0 or len(completed) == total_batches:
+                _save_b_score_checkpoint(
+                    checkpoint_path,
+                    completed,
+                    total_batches,
+                    score_signature,
+                )
 
     if remaining:
         logger.info(f"  Scoring {len(remaining)} remaining batches...")
@@ -124,7 +234,12 @@ def score_signals(
             temperature=0.3,  # Low temp for consistent scoring
             max_tokens=16384,  # 確保 output 不被截斷
         )
-        save_checkpoint_if_due(completed, checkpoint_path, total_batches, every=1)
+        _save_b_score_checkpoint(
+            checkpoint_path,
+            completed,
+            total_batches,
+            score_signature,
+        )
     else:
         logger.info("  All B-score batches complete — assembling from checkpoint")
 
@@ -154,48 +269,30 @@ def score_signals(
     return all_scored
 
 
-def select_top_signals(scored: list[dict] = None) -> list[dict]:
-    """Phase 2: Rank by total_score, pick top N * 1.5 candidates."""
-    if scored is None:
-        scored = read_json(cfg.INTERMEDIATE_DIR / "b_phase1_scored.json")
-
-    valid = [s for s in scored if s and "total_score" in s]
-    logger.info(f"Valid scored signals: {len(valid)}")
-
-    # Ensure total_score is numeric (LLM sometimes returns strings)
-    for s in valid:
-        try:
-            s["total_score"] = float(s["total_score"])
-        except (ValueError, TypeError):
-            s["total_score"] = 0.0
-    valid.sort(key=lambda x: x["total_score"], reverse=True)
-
-    # Flatten nested scores to top-level for enforce_gate compatibility
-    for s in valid:
-        for dim, val in s.get("scores", {}).items():
-            s.setdefault(dim, val)
-
-    valid = enforce_gate(valid, cfg.B_MIN_DIM_SCORES, step_label="B-Phase2")
-
-    # Take extra — diversity check will trim
-    candidates = valid[:int(cfg.B_TOP_N * 1.5)]
-
-    save_json(candidates, cfg.INTERMEDIATE_DIR / "b_phase2_top3000_candidates.json")
-    logger.info(f"Phase 2: top {len(candidates)} candidates for diversity check")
-    return candidates
-
-
 def diversity_dedup(candidates: list[dict] = None) -> list[dict]:
     """
-    Phase 3: Remove near-duplicate signals via batched LLM diversity check.
-    Splits candidates into B_DIVERSITY_BATCH-sized chunks so the LLM can
-    process all signals (avoids output truncation on large inputs).
-    Signals not mentioned by the LLM are kept (treat-as-unique approach).
+    Phase 2: Rank by total_score, take top N*1.5 candidates, then remove
+    near-duplicates via batched LLM diversity check. Signals not mentioned
+    by the LLM are kept (treat-as-unique).
     """
     if candidates is None:
-        top3000_path = cfg.INTERMEDIATE_DIR / "b_phase2_top3000_candidates.json"
-        legacy_path = cfg.INTERMEDIATE_DIR / "b_phase2_top2000_candidates.json"
-        candidates = read_json(top3000_path if top3000_path.exists() else legacy_path)
+        scored = read_json(cfg.INTERMEDIATE_DIR / "b_phase1_scored.json")
+        valid = [s for s in scored if s and "scores" in s]
+        weights = cfg.B_WEIGHTS
+        for s in valid:
+            dims = s.get("scores", {}) or {}
+            s["total_score"] = float(sum(weights.get(k, 0) * float(v) for k, v in dims.items()))
+            # Write per-dim scores under both bare and "score_"-prefixed names so
+            # downstream callers (rank_and_select, validate_output, xlsx export)
+            # find them under whichever convention they expect.
+            for dim, val in dims.items():
+                s.setdefault(dim, val)
+                s.setdefault(f"score_{dim}", val)
+        valid.sort(key=lambda x: x["total_score"], reverse=True)
+        candidates = valid[:int(cfg.B_TOP_N * 1.5)]
+        logger.info(
+            f"Ranked {len(valid)} scored signals with weights {weights}, took top {len(candidates)} for diversity check"
+        )
 
     llm = get_openai_client()
     llm.set_step("B-diversity")
@@ -256,6 +353,17 @@ def diversity_dedup(candidates: list[dict] = None) -> list[dict]:
         llm.set_step("B-translate")
         final = translate_to_zh(final, llm, cfg.TRANSLATE_MODEL, batch_size=20)
     save_json(final, cfg.INTERMEDIATE_DIR / "b_phase3_dedup_selected.json")
+    # Sidecar so downstream can detect topic-mismatch and force re-run.
+    cp = getattr(cfg, "CLIENT_PROFILE", {}) or {}
+    save_json(
+        {
+            "topic": cfg.TOPIC,
+            "timeframe": cfg.TIMEFRAME,
+            "industries": [str(x) for x in (cp.get("industries") or [])],
+            "n": len(final),
+        },
+        cfg.INTERMEDIATE_DIR / "b_phase3_dedup_selected.meta.json",
+    )
     save_split(final, cfg.OUTPUT_DIR, "B_selected_weak_signals")
 
     # Excel for human review
@@ -279,14 +387,13 @@ def diversity_dedup(candidates: list[dict] = None) -> list[dict]:
 
 # ── Run All ─────────────────────────────────────────
 def run(input_file: Path = None) -> list[dict]:
-    """Run complete Step B: Score -> Rank -> Diversity Dedup."""
+    """Run complete Step B: Score -> Rank + Diversity Dedup."""
     logger.info("=" * 60)
-    logger.info("Step B: Weak Signal Selection (3-phase)")
+    logger.info("Step B: Weak Signal Selection (2-phase)")
     logger.info("=" * 60)
 
-    scored = score_signals(input_file)
-    candidates = select_top_signals(scored)
-    selected = diversity_dedup(candidates)
+    score_signals(input_file)
+    selected = diversity_dedup()
 
     logger.info(f"Step B complete: {len(selected)} signals selected")
     return selected

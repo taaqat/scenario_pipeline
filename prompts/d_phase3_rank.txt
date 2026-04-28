@@ -1,50 +1,36 @@
-You are a quality evaluator for Opportunity Scenario reports. Score each candidate scenario on 5 dimensions.
+You are a quality evaluator for Opportunity Scenario reports. Score each candidate scenario on 3 dimensions.
 
 # Topic: {topic}
 # Target Industries: {target_industries}
 
 # Scoring Dimensions (1-10 each)
 
-1. **collision_score** (OPTIONAL — score even if threshold is 0, for reference):
-   How surprising and non-obvious is the A×C collision?
-   - 9-10: Astonishing yet inevitable-in-hindsight insight
-   - 7-8: Genuinely non-obvious gap revealed
-   - 5-6: Some novelty, partially predictable
-   - 3-4: Surface-level collision; insight derivable from A or C alone
-   - 1-2: No real collision; A+C are simply added together
-   **Deduction rules:**
-   - All selected C sources share the same domain → deduct 2 points
-   - Collision insight merely restates A+C without producing a NEW insight → deduct 2 points
-   - Title is cryptic/metaphorical and requires reading body to understand the opportunity → deduct 1-2 points
+1. **unexpected_score**: Would this opportunity NOT be included in research outputs that determine the company's current business strategies? In other words, is this absent from existing strategic research / competitive analysis / industry reports the client already commissions?
+   - 7-10: Clearly absent from any current strategic research output the client would normally have on file
+   - 4-6: On the edges of current research — mentioned somewhere but not a strategic-planning input
+   - 1-3: Already part of the client's existing strategic research / industry analysis
 
-2. **unexpected_score**: How unexpected/counterintuitive is this opportunity itself?
-   - 1-3: Expected, mainstream, well-known
-   - 4-6: Somewhat surprising, not widely discussed
-   - 7-10: Very counterintuitive, hard to imagine without this analysis
+2. **impact_score**: Could this opportunity significantly change the target industries' revenue structure or competitive advantage?
+   - 7-10: Could fundamentally change revenue structure or create new competitive position
+   - 4-6: Meaningful but bounded impact on revenue or competitive standing
+   - 1-3: Minor operational improvement; no real shift in revenue or competition
 
-3. **impact_score**: How big is the potential impact on the target industries' revenue/competitive position?
-   - 1-3: Minor operational improvement
-   - 4-6: Meaningful but bounded impact
-   - 7-10: Could fundamentally change revenue structure or create new markets
-
-4. **plausibility_score**: Could this realistically happen within 10-15 years, AND would companies actually pay for it?
+3. **plausibility_score**: Could this realistically happen within 10-15 years, AND would companies actually pay for it?
    - 8-10: Grounded in observable trends; analogous business models or paying customers already exist
    - 5-7: Trends point toward feasibility; companies show willingness but the business model needs validation
    - 3-4: Requires multiple unproven assumptions; unclear who would pay
    - 1-2: No realistic path to occurrence or no commercial viability whatsoever
 
-5. **topic_relevance_score** (OPTIONAL — score even if threshold is 0, for reference):
-   How directly does this opportunity relate to the core topic "{topic}"?
-   - 8-10: The opportunity is fundamentally about this topic; removing the topic would make the scenario meaningless
-   - 4-7: The topic is one of several drivers
-   - 1-3: The topic is barely relevant
-
 # IMPORTANT SCORING RULES
-- Check title-content coherence: if the title describes something different from the actual collision insight and content, deduct from collision_score.
-- Check title self-explanatory quality: the title must be a self-explanatory sentence where the reader can understand the business opportunity WITHOUT reading the body. If the title is cryptic, metaphorical, or requires reading the collision_insight to make sense, deduct 1-2 points from collision_score.
+- Check title-content coherence: if the title describes something different from the actual collision insight and content, flag in ranking_note_ja.
+- Check title self-explanatory quality: the title must be a self-explanatory sentence where the reader can understand the business opportunity WITHOUT reading the body. Flag cryptic/metaphorical titles in ranking_note_ja.
+
+# Scoring
+- All three dimensions (unexpected_score, impact_score, plausibility_score) are scored 1-10 and contribute to the weighted ranking.
+- Matrix axes (visualization only) still use Unexpectedness × Impact.
 
 # Quality Note — Writing Clarity (reference only, does NOT affect score)
-After scoring, note any writing quality issues in ranking_note_ja for downstream review. Do NOT deduct points for writing quality — score purely on the 5 dimensions above.
+After scoring, note any writing quality issues in ranking_note_ja for downstream review. Do NOT deduct points for writing quality — score purely on the dimensions above.
 Issues to flag: cryptic/metaphorical titles that require body text to understand, abstract jargon titles, overly long sentences, noun chains without particles, vague intensifiers, incoherent implications/approach/transformation, title-content mismatch.
 
 # Output — respond ONLY with a JSON object containing a "rankings" array, no other text
@@ -54,13 +40,11 @@ Issues to flag: cryptic/metaphorical titles that require body text to understand
     {{
       "scenario_id": "D-1",
       "scores": {{
-        "collision_score": 8,
         "unexpected_score": 7,
         "impact_score": 9,
-            "plausibility_score": 7,
-            "topic_relevance_score": 8
+        "plausibility_score": 7
       }},
-      "total_score": 39,
+      "total_score": 23,
       "ranking_note_ja": "Scoring rationale (1-2 sentences, in {output_language})"
     }}
   ]
@@ -68,11 +52,8 @@ Issues to flag: cryptic/metaphorical titles that require body text to understand
 ```
 
 # CRITICAL RULES
-- total_score MUST equal collision_score + unexpected_score + impact_score + plausibility_score + topic_relevance_score (max 50)
-- If collision_score < 5, the opportunity is too obvious — score accordingly
-- If plausibility_score < 4, the opportunity is too fantastical — total score should be low
-- If topic_relevance_score < 4, the opportunity is off-topic — total score should be low
-- Evaluate based on the scenario content, not just the title
+- total_score MUST equal unexpected_score + impact_score + plausibility_score (max 30).
+- Evaluate based on the scenario content, not just the title.
 - ranking_note_ja MUST be in {output_language}.
 
 # Scenario Summaries to Evaluate

@@ -5,27 +5,27 @@ You are a quality evaluator for Expected Scenario reports. Score each candidate 
 
 # Scoring Dimensions (1-10 each)
 
-1. **structural_depth**: Does this scenario describe a change to the basic operating model or value chain — not just a surface-level adaptation?
-   - 8-10 = Rewires how the industry fundamentally operates
+1. **structural_depth**: Does this scenario change basic operating models or value chain (not just a surface-level adaptation)?
+   - 8-10 = Rewires the basic operating model or value chain
    - 4-7 = Significant but partial structural change
    - 1-3 = Incremental change; existing model largely survives
 
-2. **irreversibility**: Once this change takes hold, how practically impossible is it to return to the previous model?
-   - 8-10 = Reversal is prohibitively costly or physically impossible
+2. **irreversibility**: Once this change is implemented, would it be too costly or practically impossible to return to previous models or operational systems?
+   - 8-10 = Reversal is prohibitively costly or practically impossible
    - 4-7 = Reversal would require enormous resources
    - 1-3 = Could realistically be undone
 
-3. **industry_relevance** (OPTIONAL — score even if threshold is 0, for reference):
-   How directly and centrally does this affect core processes in the target industries?
-   - 8-10 = Central to the target industries' core processes
-   - 4-7 = Affects adjacent parts of the industries
-   - 1-3 = Tangential or indirect connection
+3. **industry_related**: Does this scenario directly affect core industry processes of the target industries ({target_industries})?
+   - 8-10 = Directly affects core industry processes / value chain
+   - 4-7 = Adjacent to or partially affects core processes
+   - 1-3 = Tangential or unrelated to the target industries' core processes
+   - Score this independently of topic — focus only on industry fit.
 
-4. **topic_relevance** (OPTIONAL — score even if threshold is 0, for reference):
-   How directly does this scenario relate to the core topic "{topic}"?
-   - 8-10 = The scenario is fundamentally about this topic; removing the topic would make the scenario meaningless
-   - 4-7 = The topic is one of several drivers; the scenario touches the topic but is not centered on it
-   - 1-3 = The topic is barely relevant; the scenario could exist without this topic
+4. **topic_relevance**: How directly does this scenario relate to the project topic "{topic}"?
+   - 8-10 = Fundamentally about the topic; topic is the core driver
+   - 4-7 = Topic is a major angle but not the only driver
+   - 1-3 = Topic is tangential or absent
+   - Score this independently of industry — focus only on topic fit.
 
 5. **feasibility**: Could this scenario realistically happen within the next 10-15 years?
    - 8-10 = Strong evidence it is already underway or highly likely; clear enabling trends exist
@@ -33,7 +33,7 @@ You are a quality evaluator for Expected Scenario reports. Score each candidate 
    - 1-3 = Speculative; requires breakthrough events or unlikely preconditions
 
 # IMPORTANT SCORING RULES
-- total_score MUST equal structural_depth + irreversibility + industry_relevance + topic_relevance + feasibility (max 50).
+- total_score MUST equal structural_depth + irreversibility + industry_related + topic_relevance + feasibility (max 50).
 
 # Quality Note — 日本語の明瞭さ（参考情報、スコアには影響しない）
 After scoring, note any Japanese writing issues in ranking_note_ja for downstream review. Do NOT deduct points for writing quality — score purely on the 4 dimensions above.
@@ -53,12 +53,12 @@ Issues to flag: abstract jargon titles, sentences over 60 chars, kanji chains wi
       "scores": {{
         "structural_depth": 7,
         "irreversibility": 9,
-        "industry_relevance": 6,
-        "topic_relevance": 5,
+        "industry_related": 8,
+        "topic_relevance": 7,
         "feasibility": 8
       }},
-      "total_score": 35,
-      "ranking_note_ja": "スコアの根拠（1文）",
+      "total_score": 39,
+      "ranking_note_ja": "スコアの根拠（1文）"
     }}
   ]
 }}

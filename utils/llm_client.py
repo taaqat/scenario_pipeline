@@ -74,6 +74,10 @@ class CostTracker:
         self.records.append(rec)
         return rec
 
+    def reset(self):
+        """Clear all records so subsequent reports reflect only what runs after this point."""
+        self.records = []
+
     @property
     def total_input_tokens(self) -> int:
         return sum(r.input_tokens for r in self.records)

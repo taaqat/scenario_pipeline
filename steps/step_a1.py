@@ -10,6 +10,7 @@ Step A-1: Expected Scenario Generation
 import json
 import logging
 import threading
+import hashlib
 from pathlib import Path
 
 import pandas as pd
@@ -21,11 +22,55 @@ from utils.data_io import (
     read_input, read_json, save_json, save_excel,
     chunk_list, chunk_dataframe, df_to_records, is_valid_batch,
     load_prompt, unwrap_rankings, apply_scores, save_checkpoint_if_due,
-    rank_and_select, llm_review, enforce_gate,
+    rank_and_select, pick_final, compute_pool_size,
 )
 from utils.bilingual import save_split, translate_to_zh, strip_zh
 
 logger = logging.getLogger(__name__)
+
+
+def _a1_phase3_signature(themes: list[dict]) -> str:
+    """Build a stable signature for Phase3 inputs + runtime context."""
+    compact_themes = [
+        {
+            "theme_id": str(t.get("theme_id", "")),
+            "related_article_ids": [str(aid) for aid in t.get("related_article_ids", [])],
+        }
+        for t in themes
+    ]
+    cp = getattr(cfg, "CLIENT_PROFILE", {}) or {}
+    context = {
+        "topic": str(getattr(cfg, "TOPIC", "") or ""),
+        "timeframe": str(getattr(cfg, "TIMEFRAME", "") or ""),
+        "industries": [str(x) for x in (cp.get("industries") or [])],
+        "industries_ja": [str(x) for x in (cp.get("industries_ja") or [])],
+        # A1 Phase3 prompt uses writing style directly, so include it in staleness checks.
+        "writing_style": str(getattr(cfg, "WRITING_STYLE", "") or ""),
+    }
+    payload = json.dumps(
+        {"themes": compact_themes, "context": context},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+
+def _save_a1_phase3_checkpoint(
+    checkpoint_path: Path,
+    completed: dict[int, dict],
+    total_themes: int,
+    themes_signature: str,
+):
+    save_json(
+        {
+            "meta": {
+                "total_themes": total_themes,
+                "themes_signature": themes_signature,
+            },
+            "results": {str(k): v for k, v in completed.items()},
+        },
+        checkpoint_path,
+    )
 
 
 def _build_row_num_map(input_file: Path) -> dict:
@@ -263,22 +308,23 @@ def phase2_cluster(summaries: list[dict] = None) -> list[dict]:
     if summaries is None:
         summaries = read_json(cfg.INTERMEDIATE_DIR / "a1_phase1_summaries.json")
 
-    from utils.clustering import embed_and_cluster, build_cluster_dicts
+    from utils.clustering import bertopic_cluster, build_cluster_dicts
 
-    # Target: slightly more themes than GENERATE_N so rank phase can select the best
-    MERGE_TARGET = int(cfg.A1_GENERATE_N * 1.8)  # e.g. 20 → 36
+    pool_n = compute_pool_size(cfg.A1_GENERATE_N, cfg.A1_OVERGEN_FACTOR, cfg.A1_GENERATE_CAP)
+    MERGE_TARGET = pool_n
+    logger.info(f"A1 over-generation: deliver={cfg.A1_GENERATE_N}, factor={cfg.A1_OVERGEN_FACTOR}, cap={cfg.A1_GENERATE_CAP} -> pool_n={pool_n}")
 
-    # Build text for each summary (used for embedding)
     summary_texts = [
         (s.get("title_ja") or "") + " " + (s.get("summary_ja") or "")
         for s in summaries
     ]
 
-    # Embedding + k-means clustering
-    logger.info(f"Phase 2: clustering {len(summaries)} summaries into {MERGE_TARGET} themes via embedding + k-means")
-    clusters, embeddings = embed_and_cluster(
+    logger.info(f"Phase 2: clustering {len(summaries)} summaries into ~{MERGE_TARGET} themes via BERTopic (UMAP+HDBSCAN)")
+    clusters, embeddings = bertopic_cluster(
         summary_texts,
-        MERGE_TARGET,
+        min_cluster_size=cfg.A1_BERTOPIC_MIN_CLUSTER_SIZE,
+        target_n_topics=MERGE_TARGET,
+        drop_outliers=cfg.A1_BERTOPIC_DROP_OUTLIERS,
         return_embeddings=True,
     )
 
@@ -326,7 +372,7 @@ def phase2_cluster(summaries: list[dict] = None) -> list[dict]:
         if isinstance(label, dict):
             theme["theme_name_ja"] = label.get("theme_name_ja", "")
             theme["structural_direction_ja"] = label.get("structural_direction_ja", "")
-        elif isinstance(label, list) and label:
+        elif isinstance(label, list) and label and isinstance(label[0], dict):
             theme["theme_name_ja"] = label[0].get("theme_name_ja", "")
             theme["structural_direction_ja"] = label[0].get("structural_direction_ja", "")
         all_themes.append(theme)
@@ -380,6 +426,7 @@ def phase3_generate(themes: list[dict] = None) -> list[dict]:
     target_industries = ", ".join(cfg.CLIENT_PROFILE["industries"])
     target_industries_ja = ", ".join(f"[{x}]" for x in cfg.CLIENT_PROFILE["industries_ja"])
     total_themes = len(themes)
+    themes_signature = _a1_phase3_signature(themes)
     indexed_themes = [(i, t) for i, t in enumerate(themes)]
 
     # ── Checkpoint ──────────────────────────────────
@@ -388,8 +435,16 @@ def phase3_generate(themes: list[dict] = None) -> list[dict]:
     if checkpoint_path.exists():
         try:
             ckpt = read_json(checkpoint_path)
-            completed = {int(k): v for k, v in ckpt.get("results", {}).items()}
-            logger.info(f"  A1-Phase3 checkpoint: {len(completed)}/{total_themes} done")
+            meta = ckpt.get("meta", {}) if isinstance(ckpt, dict) else {}
+            saved_sig = meta.get("themes_signature")
+            saved_total = meta.get("total_themes")
+            if saved_sig != themes_signature or saved_total != total_themes:
+                logger.info(
+                    "  A1-Phase3 checkpoint is stale (themes changed) - starting fresh"
+                )
+            else:
+                completed = {int(k): v for k, v in ckpt.get("results", {}).items()}
+                logger.info(f"  A1-Phase3 checkpoint: {len(completed)}/{total_themes} done")
         except Exception:
             logger.warning("  A1-Phase3 checkpoint load failed — starting fresh")
 
@@ -424,8 +479,12 @@ def phase3_generate(themes: list[dict] = None) -> list[dict]:
                 if isinstance(item, dict):
                     completed[abs_idx] = item
             if len(completed) % 5 == 0 or len(completed) == total_themes:
-                save_json({"results": {str(k): v for k, v in completed.items()}},
-                          checkpoint_path)
+                _save_a1_phase3_checkpoint(
+                    checkpoint_path,
+                    completed,
+                    total_themes,
+                    themes_signature,
+                )
 
     if remaining:
         llm.concurrent_batch_call(
@@ -437,7 +496,12 @@ def phase3_generate(themes: list[dict] = None) -> list[dict]:
             on_item_done=on_done,
             temperature=0.75,  # Higher temp for creative scenario generation
         )
-        save_json({"results": {str(k): v for k, v in completed.items()}}, checkpoint_path)
+        _save_a1_phase3_checkpoint(
+            checkpoint_path,
+            completed,
+            total_themes,
+            themes_signature,
+        )
     else:
         logger.info("  All A1-Phase3 themes complete — assembling from checkpoint")
 
@@ -467,7 +531,7 @@ def phase4_rank(scenarios: list[dict] = None) -> list[dict]:
     llm = get_openai_client()
     llm.set_step("A1-rank")
 
-    A1_DIMS = ["structural_depth", "irreversibility", "industry_relevance", "topic_relevance", "feasibility"]
+    A1_DIMS = ["structural_depth", "irreversibility", "industry_related", "topic_relevance", "feasibility"]
 
     a1_summary_fn = lambda s: {
         "scenario_id": s.get("scenario_id"),
@@ -486,22 +550,20 @@ def phase4_rank(scenarios: list[dict] = None) -> list[dict]:
             "target_industries": ", ".join(cfg.CLIENT_PROFILE["industries"]),
         },
         step_label="A1-Phase4",
-        min_dim_scores=cfg.A1_MIN_DIM_SCORES,
+        weights=cfg.A1_WEIGHTS,
     )
 
-    # Save full ranked list to intermediate for audit
+    # Save full ranked pool (over-generated) to intermediate for audit.
     save_json(scenarios, cfg.INTERMEDIATE_DIR / "a1_phase4_ranked.json")
 
-    # LLM global review for duplicates & theme overlap
-    final = llm_review(
-        final, llm, cfg.RANK_MODEL,
-        step="A1",
-        summary_fn=a1_summary_fn,
-        prompt_vars={"topic": cfg.TOPIC},
-        step_label="A1-Phase4",
+    # Final pick: one LLM call selects K from the pool, balancing score +
+    # topic diversity + title uniqueness + topic relevance, and rewrites any
+    # title that is too jargony/abstract.
+    final = pick_final(
+        final, k=cfg.A1_GENERATE_N, llm=llm, model=cfg.RANK_MODEL,
+        fields=["title_ja", "change_from_ja", "change_to_ja", "implications_for_company_ja"],
+        topic=cfg.TOPIC, step_label="A1-Phase4",
     )
-
-    final = enforce_gate(final, cfg.A1_MIN_DIM_SCORES, step_label="A1-Phase4")
 
     # Translate and save
     if getattr(cfg, "TRANSLATE_ENABLED", False):
@@ -516,7 +578,7 @@ def phase4_rank(scenarios: list[dict] = None) -> list[dict]:
             "total_score": s.get("total_score"),
             "score_structural_depth": s.get("score_structural_depth", 0),
             "score_irreversibility": s.get("score_irreversibility", 0),
-            "score_industry_relevance": s.get("score_industry_relevance", 0),
+            "score_industry_related": s.get("score_industry_related", 0),
             "score_topic_relevance": s.get("score_topic_relevance", 0),
             "score_feasibility": s.get("score_feasibility", 0),
             "title_ja": s.get("title_ja", ""),

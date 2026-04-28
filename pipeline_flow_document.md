@@ -1,26 +1,39 @@
 # JRI Living Lab+ AI 情境分析管線
 
-## 資料處理與分析流程說明書
+## 資料處理與分析流程說明書（2026-04-27 更新）
 
 ---
 
 ## 一、管線總覽
 
-本管線將大量日文新聞與研究資料，透過 AI 分析轉化為三類情境報告，最終產出「商機報告」。整體分為四個主要步驟：
+本管線將大量日文新聞與弱訊號，透過 AI 分析轉化為三類情境報告，最終產出商機。整體分為四步：
 
-| 步驟 | 名稱 | 輸入 | 輸出數量 |
+| 步驟 | 名稱 | 輸入 | 預設交付數 (UI 可調) |
 |------|------|------|----------|
-| A1 | 預期情境 (Expected) | 新聞資料庫（約 7,200 篇） | 通過門檻的全部輸出（約 20–40 個） |
-| B | 弱訊號篩選 (Weak Signal) | 弱訊號資料庫（約 9,000 條） | 2,000 條精選弱訊號 |
-| C | 意外情境 (Unexpected) | B 篩選出的 2,000 條弱訊號 | 通過門檻的全部輸出（約 80–150 個） |
-| D | 商機情境 (Opportunity) | A1 情境 × C 情境 交叉配對 | 通過門檻的全部輸出（約 10–30 個） |
+| A1 | 預期情境 (Expected) | 新聞資料庫（約 7,200 篇） | 10（min 5 / max 30）|
+| B | 弱訊號篩選 (Weak Signal) | 弱訊號資料庫（約 9,000 條） | 2,000（min 100 / max 2,000）|
+| C | 意外情境 (Unexpected) | B 篩選出的弱訊號 | 10（min 5 / max 100）|
+| D | 商機情境 (Opportunity) | A1 × C 交叉配對 | 10（min 5 / max 30）|
 
-> A1、C、D 不設「交付 N 個」的硬性上限。所有通過評分門檻的情境全部輸出，由人工在下一環節篩選。
+**依賴關係**
 
-**品質控制三道關：**
-1. **Prompt 內建品質規則** — 在產生階段就把品質要求寫進 prompt（例如 C 的來源訊號完整性硬門檻、D 的商業可行性要求）
-2. **分數門檻過濾（Gate Filter）** — 評分後，每個維度都有最低分數門檻，任一維度未達標即濾除
-3. **LLM 全域審查（LLM Review）** — 將所有通過門檻的情境一次送交 LLM，做跨情境比較：抓重複、主題過度集中、來源薄弱等問題。標記 flag 供人工參考，不自動刪除
+```
+Articles.xlsx → A1 ─┐
+                    ├→ D
+Signals.xlsx  → B → C ┘
+```
+
+- A1 獨立（只看 Articles.xlsx）
+- B 獨立（只看 Signals.xlsx）— 與 A1 解耦（2026-04-27 起，B 評分不再參考 A1 排除主題）
+- C 依賴 B 的輸出
+- D 依賴 A1 + C 的最終輸出（OUTPUT_DIR 中的 json）
+
+**關鍵原則**
+
+- A1、C、D 系統 over-generate `pool_n = min(N × OVERGEN_FACTOR, CAP)` 個候選，再用 `pick_final` 一次 LLM call 選出 top N（diversity + title 改寫）
+- B Phase 1 LLM 評分結果 cache 後可重複利用；改 weights / N / 跑 C 都不會觸發 B 重新評分
+- D 的 3 個維度（unexpected / impact / plausibility）全部都是 weighted dim，沒有 pass/fail gate
+- 所有 cluster 用 **BERTopic（OpenAI embedding + UMAP + HDBSCAN）**，LLM 負責命名
 
 ---
 
@@ -28,361 +41,261 @@
 
 ### 情境類型
 
-- **預期情境（Expected Scenario）**：基於現有趨勢可以合理推斷的結構性變化，是「未來 10 年大概會發生的事」。重點在於結構性（改變產業基本運作模式）和不可逆性（一旦發生很難回頭）。
-- **弱訊號（Weak Signal）**：目前尚未成為主流、但可能對社會產生重大影響的微弱跡象。例如國外的生活方式改變、新興次文化、不相關領域冒出的新技術等。
-- **意外情境（Unexpected Scenario）**：從弱訊號中提煉出的「難以預見但可能對社會產生重大影響」的未來場景。重點是意外性（連專家也沒想到）和不確定性（難以預測是否會發生）。
-- **商機情境（Opportunity Scenario）**：將「預期情境」與「意外情境」交叉碰撞後，發現的非顯而易見但有商業價值的機會。重點是碰撞產生的新角度，而非 A+C 的簡單加總。
+- **A1 Expected**：產業在未來 ~10-15 年的結構性、不可逆變化
+- **C Unexpected**：意料之外、社會性影響大、高不確定性的情境
+- **D Opportunity**：A × C 交集帶出的企業商機
 
 ### 技術名詞
 
-- **分批處理**：資料量太大，AI 無法一次處理全部，所以分成小批次（例如每批 50 筆）分別處理後合併。
-- **K-Means 聚類**：將文字轉為數學向量（embedding），用 K-Means 演算法將相似內容自動分到同一群組。本管線用於 A1 Phase 2 和 C Phase 1。
-- **分數門檻過濾（Gate Filter）**：每個評分維度設有最低分數（例如 ≥ 5），任何一個維度低於門檻即被濾除。不設總分排名上限。
-- **LLM 全域審查（LLM Review）**：將所有通過門檻的情境一次送給 LLM，讓它看完全部後標記問題（重複、主題過近、來源薄弱等）。只加 flag，不自動刪除。
-- **斷點存檔（Checkpoint）**：每個階段的處理結果都會存檔，如果過程中斷可從中斷處繼續。
+- **BERTopic**：clustering pipeline = OpenAI embedding → UMAP 降維 → HDBSCAN 密度分群。比 k-means 更擅長產生大小不均的 cluster（主流大群 + 小眾專題群 + outlier 池）
+- **pool_n / pick_final**：over-generation 機制。先生 pool_n 個候選 → 排序加權 → pick_final 一次 LLM call 選 top N + 改寫差的 title
+- **rank_and_select**：批次打分 → 加權排序，無門檻過濾
+- **checkpoint**：A1 Phase 1/3、B Phase 1、C Phase 2、D Phase 2 支援斷點續跑；signature 變了 → 失效
 
 ---
 
 ## 三、步驟 A1：預期情境產生
 
-**目標：** 從大量新聞資料中，提取「未來可預見的結構性變化」。
+**輸入**：`config.A1_INPUT_FILE`（Excel）→ **輸出**：`A1_expected_scenarios_{ja,zh}.json` + `.xlsx`
 
 ### Phase 1：文章摘要
 
-將約 7,200 篇日文新聞文章，每 10 篇一組送入 AI 產生摘要。
+- **輸入**：原始 Excel 文章（每批 `A1_PHASE1_BATCH = 10` 篇）
+- **Model**：claude-haiku-4-5
+- **Prompt**：`a1_phase1_summarize.txt`
+- **輸出**：`a1_phase1_summaries.json`（檔案 + checkpoint）
+- **Cache 失效**：input 檔變動 / prompt 變動
 
-- 模型：`claude-haiku`（輕量模型，節省成本）
-- 每 10 篇為一批，最多 10 批同時並行
-- AI 針對每篇文章產生結構化摘要（含標題、重點、相關產業）
-- 輸出：約 7,200 份文章摘要
+### Phase 2：主題聚合（BERTopic）
 
-### Phase 2：主題聚合
-
-將所有摘要歸類成「結構性變化主題」。
-
-**方法：K-Means 聚類（非 LLM 分批聚合）**
-
-1. 將每份摘要的 `title_ja + summary_ja` 轉為 embedding 向量
-2. 用 K-Means 演算法聚成 **36 個群組**（= `A1_GENERATE_N × 1.8`，多於目標生成數，讓 rank 階段有選擇空間）
-3. 每個群組選出最多 10 筆代表摘要（離群組中心最近的）
-4. 將代表摘要送入 LLM（`claude-opus`），產生該群組的主題名稱和摘要
-5. 最後驗證所有文章都已分配到某個主題，未覆蓋的會 warning
-
-**聚合規則（寫在 prompt 裡）：**
-- 每個主題必須描述「一個具體的結構性變化機制」，不能太廣泛
-- 不合格：「介護・醫療的 AI/IoT/機器人智慧照護基盤轉換」（太廣）
-- 合格：「夜間照護的無人化」「在家生命徵象即時監測的標準化」（具體可想像）
-- 測試：如果一個主題涵蓋 3 個以上不同機制，就太廣
+- **輸入**：Phase 1 全部摘要
+- **演算法**：OpenAI embedding → UMAP（5 維、cosine、seed=42）→ HDBSCAN（`min_cluster_size = A1_BERTOPIC_MIN_CLUSTER_SIZE = 30`）→ optional `reduce_topics(target_n_topics=pool_n)`
+- **Outliers**：`A1_BERTOPIC_DROP_OUTLIERS = True`（HDBSCAN 認為不夠密集的文章直接捨棄，避免污染 LLM 命名）
+- **LLM 命名**：`a1_phase2_label_themes.txt`（Claude Opus 4.6）每群命主題名 + structural direction
+- **輸出**：`a1_phase2_themes.json`
+- **Cache**：每次重跑（無 cache，但便宜）
 
 ### Phase 3：情境產生
 
-針對每個主題，AI（`claude-opus`）產生一份完整的「預期情境報告」。所有主題並行處理。
+- **輸入**：Phase 2 主題群 + 每群代表文章（≤12 篇）
+- **Model**：claude-opus-4-6
+- **Prompt**：`a1_phase3_generate.txt`
+- **輸出 fields**（每個 scenario）：
+  - `title_ja`、`change_from_keyword_ja`、`change_to_keyword_ja`、`change_from_ja`、`change_to_ja`
+  - `supporting_evidences_ja`（客戶原 *Hypothesis and Background*）
+  - `post_change_scenario_ja`、`implications_for_company_ja`
+- **輸出**：`a1_phase3_scenarios.json` + checkpoint
+- **Cache 失效**：themes signature 變動
 
-**報告結構：**
-- **標題**：描述變化的對象（誰/什麼在改變），25 字以內，具體可想像
-- **FROM → TO**：現在狀態 → 未來狀態的關鍵詞和描述
-- **支持證據**：3–5 個關鍵事實，每個引用原始新聞文章編號（可追溯）
-- **變化後的世界**：如果這件事發生，未來會長什麼樣？
-- **對企業的影響**：針對 1–3 個最受影響的產業，各列出一個機會和一個挑戰
+### Phase 4：評分 + diversity 選取
 
-輸出：約 36 個候選情境
+- **Model**：gpt-5（`cfg.RANK_MODEL`）
+- **5 個評分維度**（`a1_phase4_rank.txt`）：
 
-### Phase 4：評分 → 門檻過濾 → LLM 審查
+| Dim | 來源 | 說明 |
+|---|---|---|
+| `structural_depth` | 🟢 客戶原始 | 結構性程度 |
+| `irreversibility` | 🟢 客戶原始 | 不可逆性 |
+| `industry_related` | 🟢 客戶原始 | 與目標產業核心流程的關聯 |
+| `topic_relevance` | ➕ 我們加的 | 與專案主題（如 Aging Society）的關聯 |
+| `feasibility` | 🟢 客戶原始（語意調整）| 10-15 年內實現可能性 |
 
-評分模型：`gpt-5.2`。每批 30 個情境分批評分，分數直接用於門檻過濾。
-
-**評分維度（4 個維度，各 1–10 分，滿分 40 分）：**
-
-| 維度 | 名稱 | 高分 (8-10) | 中等 (4-7) | 低分 (1-3) |
-|------|------|-------------|------------|------------|
-| 1 | 結構深度 (structural_depth) | 徹底重塑產業運作方式 | 重大但局部的結構性變化 | 漸進式改變，現有模式大致存續 |
-| 2 | 不可逆性 (irreversibility) | 逆轉成本極高或物理上不可能 | 逆轉需要巨大資源 | 現實中可以被撤回 |
-| 3 | 產業相關性 (industry_relevance) | 直接影響目標產業核心流程 | 影響產業的周邊環節 | 間接或切線關聯 |
-| 4 | 主題相關性 (topic_relevance) | 情境根本與主題直接相關 | 主題是多動因之一 | 主題關聯極弱 |
-
-**特殊規則：** `topic_relevance ≤ 3` 時，`total_score` 強制 ≤ 15（無論其他維度多高）。
-
-**門檻過濾：** 四個維度各自 ≥ 5 分才通過。任一維度低於 5 分即濾除。
-
-**排序：** 依 `total_score` 降序。同分時以各維度分數的方差（variance）作 tiebreak — 方差越高表示越有特色，排名越前。
-
-**日文品質備註：** 評分時同時在 `ranking_note_ja` 欄位標記日文寫作問題（抽象術語標題、超過 60 字的句子、缺少助詞的漢字連鎖、用形容詞代替數字等），但**不扣分**，僅供後續人工改稿參考。
-
-#### 4b. LLM 全域審查
-
-將所有通過門檻的情境一次送給審查 LLM（`gpt-5.2`），做跨情境比較。標記以下 flag：
-
-| Flag | 說明 |
-|------|------|
-| `review_duplicate_of` | 與更高分的某情境本質相同（需同時滿足 2+ 條件：相同核心機制、相同結論/終態、相同問題領域 AND 受影響人群） |
-| `review_theme_overlap` | 兩個情境不完全重複但主題非常接近，保留兩個對多樣性增加有限（比 duplicate 更軟的標記） |
-| `review_note` | 審查者的文字備註 |
-
-> LLM 審查只標記 flag，不自動刪除情境。最終取捨由人工決定。
+- `weighted_score = Σ (A1_WEIGHTS[dim] × dim_score)`
+- `pick_final` 一次 LLM call 從 pool_n 中選 top N + 改寫太抽象的 title
+- 若 `TRANSLATE_ENABLED`：再做 ja→zh 翻譯
+- **輸出**：`A1_expected_scenarios_{ja,zh}.json` + `.xlsx`
 
 ---
 
 ## 四、步驟 B：弱訊號篩選
 
-**目標：** 從大量弱訊號資料中，篩選出最有價值的訊號，供後續步驟 C 使用。
+**輸入**：`config.B_INPUT_FILE`（Excel） → **輸出**：`B_selected_weak_signals_{ja,zh}.json` + `.xlsx`
 
 ### Phase 1：多維度評分
 
-將約 9,000 條弱訊號，每 25 條一批送入 AI（`gpt-5.2`）評分。
+- **輸入**：原始 Excel 弱訊號（每批 `B_BATCH_SIZE = 25` 條）
+- **Model**：gpt-5
+- **Prompt**：`b_phase1_score_signals.txt`（**不含** A1 內容，2026-04-27 起獨立）
+- **3 個維度**（全部客戶原始）：
 
-**評分維度（4 個維度，各 1–10 分，滿分 40 分）：**
+| Dim | 說明 |
+|---|---|
+| `outside_area` | 是否在客戶熟悉的產業 / known_domains 之外 |
+| `novelty` | 是否為客戶聞所未聞的新資訊 |
+| `social_impact` | 對社會的潛在影響 |
 
-| 維度 | 名稱 | 高分 (8-10) | 中等 (4-7) | 低分 (1-3) |
-|------|------|-------------|------------|------------|
-| 1 | 外部性 (outside_area) | 完全來自客戶從未監測的領域 | 與已知領域部分重疊 | 直接在客戶核心產業範圍內 |
-| 2 | 新奇性 (novelty) | 完全未知（國外生活方式、小眾次文化、無關領域新技術） | 在相鄰產業中有些知名度 | 客戶已知領域中的常識 |
-| 3 | 社會影響力 (social_impact) | 大規模社會變革，影響廣泛人口 | 對特定群體有中等影響 | 影響極小或僅限局部 |
-| 4 | 主題相關性 (topic_relevance) | 強烈且直接的關聯 | 間接但合理的關聯 | 完全無法聯想的關聯 |
+- **輸出**：`b_phase1_scored.json`（cache 永久保存 per-dim 分數）+ checkpoint
+- **Cache 失效**：input 檔 mtime / prompt / topic / client_profile / model 任一變
 
-**重要規則：**
-- 與 A1 預期情境重疊的訊號 → 外部性低分
-- 在客戶已知領域範圍內的訊號 → 新奇性低分
-- API 呼叫層有內建 retry；若個別項目最後仍未成功覆蓋，流程會保留 warning 供人工檢查，但不再做第二輪補打分
+### Phase 2：加權排序 + diversity 去重
 
-### Phase 2：初步篩選
-
-依總分排序，取前 3,000 名候選（= 最終 2,000 條輸出的 1.5 倍，供下一階段去重）。
-
-### Phase 3：多樣性去重
-
-將 3,000 條候選訊號分批（每批 600 條），由 AI 檢查是否有內容重複的訊號。
-
-**去重標準：** 如果多條訊號涵蓋本質上相同的現象或趨勢，只保留最佳的一條（最高新奇性 + 社會影響力）。
-
-移除重複後，保留前 2,000 條作為最終輸出。所有輸出均產生日文與中文翻譯版本。
+- **重新計算 total_score**：`Σ (B_WEIGHTS[dim] × dim_score)` — 改 weights 不重評分，只重排序（便宜）
+- 排序後取 top `B_TOP_N × 1.5` 候選送 diversity check
+- **Model**：gpt-5（`b_phase3_diversity_check.txt`）
+- 每批 ≤`B_DIVERSITY_BATCH = 600` 條，LLM 標近似群、保留每群一條
+- 最終 trim 到 `B_TOP_N` 條（預設 2000）
+- **輸出**：`b_phase3_dedup_selected.json` + `.xlsx`
+- **Cache**：無，每次重跑（但 LLM call 數少）
 
 ---
 
 ## 五、步驟 C：意外情境產生
 
-**目標：** 從篩選過的弱訊號中，提取「難以預見但可能對社會產生重大影響」的情境。
+**輸入**：B 的輸出 → **輸出**：`C_unexpected_scenarios_{ja,zh}.json` + `.xlsx`
 
 ### Phase 1：弱訊號聚類
 
-將 2,000 條弱訊號聚成主題群組。
+3 種 mode（`config.C_MODE`）：
 
-**方法：K-Means 聚類**
+| Mode | 描述 |
+|---|---|
+| `cluster` | BERTopic 直接分群（最穩、單主題情境）|
+| `cluster_pair`（**預設**）| BERTopic 後，每對隨機抽 3 組候選、保留 cosine 距離最遠的 → 強制跨主題碰撞 |
+| `signal_pair` | 跳過 clustering，每群隨機 2 條 signal → 最混亂、原料碰撞 |
 
-1. 將每條弱訊號的 `title_ja + reasoning_ja` 轉為 embedding 向量
-2. 用 K-Means 聚成 **150 個群組**（= `C_GENERATE_N`，1:1 對應後續情境產生）
-3. 每個群組選出最多 10 筆代表弱訊號（離群組中心最近的）
-4. 將代表弱訊號送入 LLM（`claude-opus`），產生群組主題名稱和 synthesis hint
-5. 驗證所有弱訊號都已分配到某個群組
-
-**群組品質規則（寫在 prompt 裡）：**
-- 每個群組應包含 3–5 條弱訊號，偏好 3 條緊密相關而非 5 條鬆散相關
-- 每條訊號只屬於一個群組
-- 品質測試：驗證群組內所有訊號是否共享相同的底層現象或機制
+- BERTopic 配置：`C_BERTOPIC_MIN_CLUSTER_SIZE = 15`（小於 A1 因為 signal 短）
+- LLM 命名：`c_phase1_label_clusters.txt`（claude-opus-4-6）
+- **輸出**：`c_phase1_clusters.json`
 
 ### Phase 2：情境產生
 
-針對每個群組，AI（`claude-opus`）產生一份「意外情境報告」。所有群組並行處理。
+- **Model**：claude-opus-4-6
+- **Prompt**：`c_phase2_generate.txt`
+- **輸出 fields**（每個 scenario）：
+  - `title_ja`、`overview_ja`、`why_ja` (list)、`who_ja` (list)、`where_ja`、`what_how_ja` (list)
+  - `source_signals`（signal IDs）
+  - `timeline_decade`、`timeline_description_ja`（2030 / 2040 焦點）
+- **輸出**：`c_phase2_scenarios.json` + checkpoint
+- **Cache 失效**：clusters signature 變動
 
-- **溫度設定：0.6**（在創意與一致性之間取得平衡）
+### Phase 3：評分 + diversity 選取
 
-**來源訊號完整性 — 硬門檻（寫在 prompt 裡）：**
-
-> AI 在產生情境前必須通過自我檢查：
-> 1. 每條因果鏈都能追溯回至少一條來源弱訊號嗎？
-> 2. 此情境是否引入了來源弱訊號不支持的假設？
->
-> 如果 Q1 = NO 或 Q2 = YES → **必須重寫直到兩者都通過**。
-> 「意外性」必須來自弱訊號本身，不能來自想像。
-
-**報告結構：**
-- **標題**：一句話說明這個「意外未來」（20 字以內），必須是可以畫出來的具體場景
-- **概述**：這個意外未來大致是什麼樣子（200–400 日文字）
-- **WHY（為何發生）**：2–4 個主要原因
-- **WHO（誰受影響）**：1–3 個主要受影響群體
-- **WHERE（在哪發生）**：聚焦真實世界的社會影響
-- **WHAT/HOW（具體案例）**：3–5 個具體案例
-- **時間線**：主要發生在哪個十年（2020s / 2030s / 2040+）
-- **來源弱訊號**：列出支持此情境的弱訊號 ID 與標題（可追溯）
-
-輸出：約 150 個候選情境
-
-### Phase 3：評分 → 門檻過濾 → LLM 審查
-
-評分模型：`gpt-5.2`。每批 30 個情境分批評分。
-
-**評分維度（3 個維度，各 1–10 分，滿分 30 分）：**
-
-| 維度 | 名稱 | 高分 (8-10) | 中等 (4-7) | 低分 (1-3) |
-|------|------|-------------|------------|------------|
-| 1 | 意外程度 (unexpectedness) | 完全不在任何主流敘事中 | 不尋常但在邊緣討論中出現過 | 已在主流意識中 |
-| 2 | 社會影響力 (social_impact) | 改變大多數人口的日常生活 | 顯著影響特定大型社會群體 | 限於狹窄群體或地區 |
-| 3 | 不確定性 (uncertainty) | 本質上不可知——專家無法判定可能性 | 專家意見分歧顯著 | 方向或時程相當可預測 |
-
-**門檻過濾：** 三個維度各自 ≥ 5 分才通過。
-
-**LLM 全域審查 flag：**
-
-| Flag | 說明 |
-|------|------|
-| `review_duplicate_of` | 與更高分情境本質相同（同 A1 的 2+ 條件判定） |
-| `review_weak_source` | 情境核心機制超出來源弱訊號實際支持的範圍——AI 發明了數據中不存在的因果關係 |
-| `review_weak_logic` | 從弱訊號到描述的未來，推理鏈要求不合理的大邏輯跳躍 |
-| `review_note` | 審查者的文字備註 |
-
-產生日文與中文翻譯版本。
+- **Model**：gpt-5
+- **3 個維度（全部客戶原始）**：`unexpectedness`、`social_impact`、`uncertainty`
+- `weighted_score = Σ C_WEIGHTS × dim_score` → `pick_final` 選 top `C_GENERATE_N`
+- `pick_final` 用 `topic=""`（C 刻意跟主題解耦，由 signal 自身定義領域）
+- **輸出**：`C_unexpected_scenarios_{ja,zh}.json` + `.xlsx`
 
 ---
 
 ## 六、步驟 D：商機情境產生
 
-**目標：** 將「預期情境」與「意外情境」交叉配對，發現非明顯但有價值的商機。
+**輸入**：`A1_expected_scenarios_ja.json` + `C_unexpected_scenarios_ja.json`（OUTPUT_DIR）→ **輸出**：`D_opportunity_scenarios_{ja,zh}.json` + `C_used_in_D_{ja,zh}.json` + `.xlsx`
 
-**核心邏輯：** 「當預期的未來 [A] 遇上意外的破壞 [C]，會產生什麼新的缺口、需求或機會？」
+### Phase 1：A × C 配對
 
-> 注意：A1 和 C 的輸出在進入 D 之前會由人工篩選過。D 讀的是篩選後的版本。
-> 如有人工調整，後續步驟請以目前的 JSON 輸出為準。
+3 種 mode：
 
-### Phase 1：智慧配對
+| Mode | 描述 |
+|---|---|
+| `select_pairs`（LLM-guided）| LLM 從 A × C 全集中選 16 對最有意義的（每對至少 1A + 2C）|
+| `random` | 隨機抽 1A + 2C 配 16 對 |
+| `matrix` | 窮舉 N_A × N_C（如 20 × 15 = 300 對）|
 
-由 LLM（`claude-opus`）評估所有 A×C 可能組合，篩選約 40 組最有潛力的配對。
+- **freshness check**：A/C output 檔 mtime > pairs.json mtime → 重新配對
+- **輸出**：`d_phase1_pairs.json`
 
-**配對篩選標準：**
-1. **存在真正的碰撞**：A 和 C 以非顯而易見的方式互動——產生張力、矛盾或意外的協同效應
-2. **對企業產生意外影響**：機會不是目前主流商業策略中已有的東西
-3. **對企業有大影響潛力**：可能顯著改變收入結構、競爭優勢或開拓新市場
-4. **跨領域驚喜**：碰撞揭示的洞見是分開研究 A 或 C 時不會出現的
+### Phase 2：商機報告產生
 
-**配對排除標準：**
-1. A 和 C 來自同一個明顯領域（太相似）
-2. 組合只是簡單加總（沒有衍生洞見）
-3. 機會已經是眾所周知或在目前商業策略討論中
+- **Model**：claude-opus-4-6
+- **Prompt**：`d_phase2_generate.txt`
+- **輸出 fields**：
+  - `opportunity_title_ja`、`background_ja`、`about_the_future_ja`
+  - `implications_for_company_ja`（含 [Opportunity] / [Challenge]）
+  - `company_approach_ja`（含 [Industry] tag + 多階段子措施）
+  - `transformation_points_ja`
+  - `selected_expected` / `selected_unexpected`（A/C IDs+ titles）
+  - `collision_insight_ja`（A+C 碰撞解釋，內部新增）
+  - `unexpected_score`、`impact_score`、`plausibility_score`（同步打分）
+- **輸出**：`d_phase2_scenarios.json` + checkpoint
+- **Cache 失效**：pairs signature 變動
 
-**多樣性規則：**
-- 每個預期情境最多出現在 2–3 組配對中（依總配對數動態調整）
-- 每個意外情境最多出現在 2–3 組配對中
-- 每個預期情境和每個意外情境至少出現 1 次（全覆蓋，硬性要求）
-- 每組配對至少使用 2 個預期情境 + 2 個意外情境，最多各 5 個
-- 任何兩組配對不能同時共享超過 1 個 A 情境和超過 1 個 C 情境
+### Phase 3：評分 + Gate + Matrix 分類
 
-### Phase 2：報告產生
+- **Model**：gpt-5
+- **3 個維度**（`d_phase3_rank.txt`）：
 
-針對每組配對，AI（`claude-opus`）產生完整的「商機情境報告」。所有配對並行處理。
+| Dim | 來源 | 用途 |
+|---|---|---|
+| `unexpected_score` | 🟢 客戶原始 | 加權 |
+| `impact_score` | 🟢 客戶原始 | 加權（business impact = revenue / competitive position）|
+| `plausibility_score` | ➕ 我們加的（per JRI 4/2 反饋）| 加權（2026-04-27 起從 pass/fail gate 改為 weighted dim）|
 
-**商業可行性要求（寫在 prompt 裡）：**
-
-> 每個機會必須有明確的付費者（誰會買單？）、可辨識的產品或服務、以及合理的收入路徑。**如果你說不出誰付費，這就不是一個機會。**
-
-**報告結構：**
-- **標題**：一句話說明這個新機會（25 字以內），具體可想像
-- **碰撞洞見**：只有在 A 和 C 交會時才能看到的東西（2–3 句）
-- **背景**：這個機會產生的大環境（150–250 日文字）
-- **未來樣貌**：如果抓住這個機會，未來會長什麼樣？（200–400 日文字）
-- **對企業的影響**：針對 1–3 個最受影響的產業，各列出一個機會和一個挑戰
-- **建議行動方案**：企業應該怎麼做來抓住這個機會（每個產業一個行動）
-- **轉型重點**：企業內部需要改變什麼才能實現（每個產業一個）
-
-**一致性規則：** 影響分析、行動方案、轉型重點三個欄位必須涵蓋同樣的產業，且敘事邏輯連貫。
-
-輸出：約 40 個候選商機情境
-
-### Phase 3：評分 → 門檻過濾 → LLM 審查
-
-評分模型：`gpt-5.2`。每批 30 個情境分批評分。
-
-**評分維度（5 個維度，各 1–10 分，滿分 50 分）：**
-
-| 維度 | 名稱 | 高分 | 中等 | 低分 |
-|------|------|------|------|------|
-| 1 | 碰撞新奇度 (collision_score) | 9–10: 驚人卻事後看來必然 | 5–6: 部分可預測 | 1–2: 無真正碰撞 |
-| 2 | 意外程度 (unexpected_score) | 7–10: 非常反直覺 | 4–6: 略微驚訝 | 1–3: 主流已知 |
-| 3 | 影響力 (impact_score) | 7–10: 從根本改變收入結構或創造新市場 | 4–6: 有意義但有限 | 1–3: 微小改善 |
-| 4 | 可行性 (plausibility_score) | 8–10: 基於可觀察趨勢，已有類似商業模式或付費客戶 | 5–7: 趨勢指向可行但商業模式需驗證 | 1–4: 需多個未驗證假設，不清楚誰付費 |
-| 5 | 主題相關性 (topic_relevance_score) | 8–10: 機會根本源於主題 | 4–7: 主題是多動因之一 | 1–3: 主題關聯極弱 |
-
-> **可行性的定義：** 「未來 10–15 年真的可能發生，且有企業可能會買單。」
-
-**collision_score 扣分規則：**
-- 所有選擇的 C 來源來自同一領域 → 扣 2 分
-- 碰撞洞察僅是 A+C 的重述而未產生新洞察 → 扣 2 分
-- 標題晦澀/隱喻需要閱讀內文才能理解 → 扣 1–2 分
-
-**硬性 Gate 規則：**
-- `plausibility_score ≤ 3` 或 `topic_relevance_score ≤ 3` → `total_score` 強制 ≤ 20
-- `collision_score < 5` → 機會太明顯，應按此低評
-
-**門檻過濾：** 五個維度各自 ≥ 5 分才通過。
-
-**LLM 全域審查 flag：**
-
-| Flag | 說明 |
-|------|------|
-| `review_duplicate_of` | 與更高分情境本質相同（同 A1 的 2+ 條件判定） |
-| `review_theme_overlap` | 主題非常接近，保留兩個對多樣性增加有限 |
-| `review_weak_collision` | 碰撞洞察只是 A + C 簡單相加，沒有真正新的角度 |
-| `review_note` | 審查者的文字備註 |
-
-產生日文與中文翻譯版本。
+- `weighted_score = Σ (D_WEIGHTS[dim] × dim_score)` for all 3 dims
+- `total_score` 改成 3 維加總（max 30）
+- `pick_final` 選 top `D_GENERATE_N`
+- 若 `D_MATRIX_MODE = True`：用最終 N 個的 median 切 2×2 → `breakthrough` / `surprising` / `incremental` / `low_priority`
+- C 再導出：只保留被 D 引用到的 C scenarios → `C_used_in_D_{ja,zh}.json`
 
 ---
 
-## 七、品質控制機制總覽
+## 七、Cache 與成本一覽
 
-### 7.1 三道品質關卡
+| 階段 | LLM call 數 | Cache 穩? | 觸發重跑的條件 |
+|---|---|---|---|
+| A1 Phase 1（摘要）| ~720 articles | ✅ 穩 | input 檔 / prompt |
+| A1 Phase 2（cluster + LLM 命名）| ~30-90 群 | ❌ 每次重跑（便宜）| 每次 |
+| A1 Phase 3（生成）| pool_n（最多 90）| ✅ 穩 | themes 變 |
+| A1 Phase 4（rank + pick）| 每 30 個 1 batch + 1 次 pick | ❌ 每次重跑 | 每次 |
+| B Phase 1（評分）| 8000+ signals → ~360 batches | ✅ 穩（最重要的 cache）| input / prompt / topic / model |
+| B Phase 2（去重）| ~3000 / 600/batch | ❌ 每次重跑（中等）| 每次 |
+| C Phase 1（cluster + 命名）| ~20-60 群 | ❌ 每次重跑 | 每次（cluster_pair 模式還有隨機性）|
+| C Phase 2（生成）| pool_n（~20-200）| ✅ 穩 | clusters 變 |
+| C Phase 3（rank + pick）| ~1 batch | ❌ | 每次 |
+| D Phase 1（配對）| 1 LLM call (select_pairs) | ✅ 穩（freshness check）| A/C output mtime |
+| D Phase 2（生成）| pool_n（最多 60）| ✅ 穩 | pairs 變 |
+| D Phase 3（rank + gate + pick）| 1 batch | ❌ | 每次 |
 
-| 關卡 | 時機 | 做法 | A1 | B | C | D |
-|------|------|------|:--:|:-:|:-:|:-:|
-| Prompt 內建規則 | 產生階段 | 在 prompt 中寫明品質要求 | ✓ | — | ✓ | ✓ |
-| 分數門檻過濾 | 評分後 | 每個維度 ≥ 最低分數才通過 | ✓ | — | ✓ | ✓ |
-| LLM 全域審查 | 門檻過濾後 | 全部送 LLM 跨情境比較 | ✓ | — | ✓ | ✓ |
+**改設定影響範圍速查**
 
-- B 步驟使用簡單的總分排序 + LLM 去重，不走三道關卡流程
-
-### 7.2 LLM 審查的定位
-
-LLM 審查是**參考標記**，不是自動刪除機制。審查只在情境上加 flag，最終去留由人工決定。這避免了 AI 過度清理的風險。
-
-### 7.3 日文品質審查
-
-所有評分階段同時產生 `ranking_note_ja`，標記以下問題供人工改稿參考（不影響評分）：
-- 抽象術語標題
-- 超過 60 字的句子
-- 缺少助詞的漢字連鎖
-- 用形容詞代替數字
-- 核心機制不清
-
-### 7.4 斷點存檔與重試
-
-- 每個階段的處理結果都會存檔，中斷後可從中斷處繼續
-- B 的弱訊號評分失敗時，會縮小批次大小自動重試
-- 所有 LLM 呼叫支援最多 3 次自動重試
-
-### 7.5 可追溯性
-
-- 每個預期情境 → 可追溯到原始新聞文章（透過文章 ID）
-- 每個意外情境 → 可追溯到篩選出的弱訊號（透過弱訊號 ID）
-- 每個商機情境 → 可追溯到其來源的預期情境與意外情境
+| 改什麼 | 觸發誰重跑 |
+|---|---|
+| Articles.xlsx | A1 全 4 phase |
+| Signals.xlsx | B Phase 1 全跑（最貴） |
+| A1 weights / N | A1 Phase 2-4 重跑（Phase 1 cache 命中）|
+| B weights / B_TOP_N | 只 B Phase 2 重跑（便宜）|
+| C weights / N / mode | C 全 phase |
+| D weights / gate / mode | D Phase 1-3 重跑 |
+| topic / industries / known_domains | A1 Phase 3-4 + B Phase 1 + C/D |
+| 跑 A1 重生成 | C 不會（B 已隔離）；D 會（A1 output 變了）|
 
 ---
 
 ## 八、模型分工
 
-| 用途 | 模型 | 說明 |
-|------|------|------|
-| 摘要（A1 Phase 1） | `claude-haiku` | 輕量、低成本，處理 7,200 篇 |
-| 聚類命名、情境產生 | `claude-opus` | 最強生成能力 |
-| 評分、門檻過濾 | `gpt-5.2` | 穩定的結構化評分 |
-| LLM 全域審查 | `gpt-5.2` | 跨情境比較 |
-| 翻譯（ja → zh） | `gpt-5` | 翻譯不需最強模型 |
+| 任務 | Model | 為什麼 |
+|---|---|---|
+| 摘要 / 輕量分類 | claude-haiku-4-5 | 便宜、快 |
+| 主題命名 / 情境生成 | claude-opus-4-6 | 品質要求高 |
+| 評分 / 排序 / pick_final | gpt-5 | JSON 結構化輸出穩定 |
+| ja→zh 翻譯 | gpt-5（cfg.TRANSLATE_MODEL）| 雙語對照 |
+| Embedding | text-embedding-3-small | clustering 用 |
 
 ---
 
-## 九、整體流程摘要
+## 九、客戶原始 vs 我們新增（dimension 層級）
 
-| 步驟 | 處理流程 | 關鍵數字 |
-|------|----------|----------|
-| A1 | 文章摘要 → K-Means 聚類 → 情境產生 → 評分門檻過濾 → LLM 審查 | 7,200 篇 → 36 主題 → 通過門檻的全部輸出 |
-| B | 多維度評分 → 排序篩選 → 多樣性去重 | 9,000 條 → 3,000 → 2,000 條 |
-| C | K-Means 聚類 → 情境產生 → 評分門檻過濾 → LLM 審查 | 2,000 條 → 150 群組 → 通過門檻的全部輸出 |
-| D | A1×C 智慧配對 → 報告產生 → 評分門檻過濾 → LLM 審查 | A×C → 40 對 → 通過門檻的全部輸出 |
+按 `clients need/final_criteria_v2.md` 為準。
 
-> A1 和 C 的輸出在進入 D 之前，由人工篩選。D 讀的是篩選後的版本。
+| Step | Dim | 來源 |
+|---|---|---|
+| **A1** | structural_depth、irreversibility、industry_related、feasibility | 🟢 客戶原始 |
+| A1 | topic_relevance | ➕ 我們加（2026-04-27 從 `relevance` 拆出獨立計分）|
+| **B** | outside_area、novelty、social_impact | 🟢 客戶原始 |
+| **C** | unexpectedness、social_impact、uncertainty | 🟢 客戶原始 |
+| **D** | unexpected_score、impact_score | 🟢 客戶原始 |
+| D | plausibility_score（weighted dim）| ➕ 我們加（per JRI 4/2 反饋同意；2026-04-27 從 gate 改為 weighted）|
+| D | matrix quadrant 分類 | ➕ 我們加（per JRI 4/2 反饋同意）|
+
+**原則**：客戶原始維度的名稱與定義不可改；要新增另立維度，不混合進舊的。
+
+---
+
+## 十、整體流程摘要
+
+1. 用戶在 UI（http://localhost:8080）設定 N、weights、mode
+2. 按 Run All（或單步）→ 系統 over-generate → 加權排序 → pick_final 選 top N
+3. 結果寫入 `data/output/{topic}/`：4 個 main JSON + xlsx + 1 個 C_used_in_D 子集
+4. 可在 Results tab 直接生成 Japanese PPTX（`generate_pptx.js`）
+
+**驗證**：`python validate_output.py` 檢查 score 欄位 + dimension 門檻 + 引用一致性。

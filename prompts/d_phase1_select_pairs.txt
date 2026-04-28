@@ -14,12 +14,14 @@ The best collisions are NOT obvious sums of A + C. They are surprising but REALI
 2. **Plausible within 10-15 years**: The resulting opportunity could realistically emerge given current trends. NOT science fiction.
 3. **Big company impact potential**: Could significantly change revenue structure, competitive advantage, or open new markets for companies in: {target_industries}
 4. **Cross-domain surprise**: The collision reveals insights that wouldn't emerge from studying A or C independently
+5. **Articulable bridge between A and C**: You must be able to state, in ONE sentence, the concrete bridge that links them — e.g., "A involves elderly workers; C involves biological-age verification; both meet at hiring decisions." If you cannot articulate the bridge in one sentence, the pair is random — drop it. "Both happen in 2030s Japan" is NOT a bridge.
 
 ## MUST NOT select pairs where:
 1. A and C are from the same obvious domain (e.g., "aging healthcare" × "aging care disruption" — too similar)
 2. The combination is a simple sum (A talks about X, C talks about Y, opportunity = X+Y with no emergent insight)
 3. The opportunity is already well-known or in current business strategy discussions
 4. The collision requires impossible or fantastical preconditions (e.g., new biological currencies, post-death legal personhood, marrying oneself)
+5. The resulting opportunity is just "A's technology provider gets a new customer" — the opportunity protagonist should be a DIFFERENT industry from A
 
 # Pair Guidelines (soft goals — do your best, approximate is OK)
 - Prefer not to reuse the same A scenario in more than ~{max_per_a} pairs
