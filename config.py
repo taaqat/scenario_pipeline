@@ -208,9 +208,9 @@ load_topic_config()
 
 UI_PARAMS = {
     # ── Global ──
-    "TOPIC":        {"section": "Global", "label": "Research Topic", "hint": "The core subject of the analysis. ⚠ If you change this, re-run every step (A1 → B → C → D).", "type": "text", "default": TOPIC, "priority": "main"},
-    "TIMEFRAME":    {"section": "Global", "label": "Time Horizon", "hint": "The future window the scenarios should describe (e.g. \"Next 10-15 years\"). ⚠ If you change this, re-run every step.", "type": "text", "default": TIMEFRAME, "priority": "main"},
-    "INDUSTRIES":   {"section": "Global", "label": "Target Industries", "hint": "Industries the client cares about, comma-separated. ⚠ If you change this, re-run every step.", "type": "text", "default": ", ".join(CLIENT_PROFILE["industries"]), "priority": "main"},
+    "TOPIC":        {"section": "Global", "label": "Research Topic", "hint": "The core subject of the analysis. ⚠ If you change this, re-run all four steps (① → ② → ③ → ④).", "type": "text", "default": TOPIC, "priority": "main"},
+    "TIMEFRAME":    {"section": "Global", "label": "Time Horizon", "hint": "The future window the scenarios should describe (e.g. \"Next 10-15 years\"). ⚠ If you change this, re-run all four steps.", "type": "text", "default": TIMEFRAME, "priority": "main"},
+    "INDUSTRIES":   {"section": "Global", "label": "Target Industries", "hint": "Industries the client cares about, comma-separated. ⚠ If you change this, re-run all four steps.", "type": "text", "default": ", ".join(CLIENT_PROFILE["industries"]), "priority": "main"},
 
     # ── A1 ──
     "A1_GENERATE_N":                {"section": "A1 Expected", "label": "Number of scenarios to deliver", "hint": "Final number of expected scenarios shown to the client. The system over-generates candidates and then picks the most representative ones for diversity.", "type": "number", "min": 5, "max": 30, "default": 10, "priority": "main"},

@@ -520,6 +520,10 @@ def phase3_rank(scenarios: list[dict] = None) -> list[dict]:
         {
             "scenario_id": s.get("scenario_id"),
             "total_score": s.get("total_score"),
+            "weighted_score": s.get("weighted_score"),
+            "score_unexpectedness": s.get("score_unexpectedness"),
+            "score_social_impact": s.get("score_social_impact"),
+            "score_uncertainty": s.get("score_uncertainty"),
             "title_ja": s.get("title_ja", ""),
             "title_zh": s.get("title_zh", ""),
             "overview_ja": s.get("overview_ja", ""),

@@ -174,7 +174,7 @@ def sync_sacred_backups() -> None:
       - primary newer than mirror → copy to mirror (keep the safety net fresh)
       - primary missing, mirror present → RESTORE from mirror (loud log)
       - both missing → leave alone; check_prerequisites() will block any Run
-        and tell the user to contact the JRI team
+        and tell the user to contact the LivingLab+ team
 
     This guards against the most common loss vectors: an accidental `rm`,
     a `git clean`, or a deploy that didn't carry data/intermediate/. It does
@@ -212,7 +212,7 @@ def sync_sacred_backups() -> None:
                     f"sacred-backup: RESTORED {fn} from {backup_dir} — "
                     f"the primary copy in {cfg.INTERMEDIATE_DIR} was missing. "
                     f"This usually means someone cleaned the data/ directory; "
-                    f"please confirm the file is intact and tell the JRI team."
+                    f"please confirm the file is intact and tell the LivingLab+ team."
                 )
         except Exception as e:
             logger.warning(f"sacred-backup: {fn} sync/restore failed: {e}")
@@ -541,19 +541,17 @@ def check_prerequisites(key: str) -> tuple[bool, str | None]:
         sf = cfg.INTERMEDIATE_DIR / "a1_phase1_summaries.json"
         if not sf.exists():
             return False, (
-                "Cannot run ①: the phase-1 article-summaries cache is missing. "
-                "This cache represents hours of LLM work and is only ever "
-                "generated via the command-line tool. Contact the JRI team "
-                "to restore `a1_phase1_summaries.json`."
+                "Cannot run ①: an essential pre-processed data file is missing. "
+                "Recreating it takes hours of AI work, so it can only be "
+                "restored by the LivingLab+ team — please contact them."
             )
     if key == "run_b":
         bf = cfg.INTERMEDIATE_DIR / "b_phase1_scored.json"
         if not bf.exists():
             return False, (
-                "Cannot run ②: the phase-1 signal-scoring cache is missing. "
-                "This cache represents hours of LLM work and is only ever "
-                "generated via the command-line tool. Contact the JRI team "
-                "to restore `b_phase1_scored.json`."
+                "Cannot run ②: an essential pre-processed data file is missing. "
+                "Recreating it takes hours of AI work, so it can only be "
+                "restored by the LivingLab+ team — please contact them."
             )
 
     # ── Upstream-output dependency checks ──────────────────
@@ -676,7 +674,7 @@ def run_step(key: str, ov: dict, phase_cb):
         # reach this branch. The UI's job from here is just to re-rank and
         # de-duplicate the existing scores against the current weights.
         from steps.step_b import diversity_dedup
-        phase_cb("② 1/1 — Ranking & de-duplicating signals...", 1, 1)
+        phase_cb("② Ranking & de-duplicating signals (using cached LLM scores)...", 1, 1)
         diversity_dedup()
 
     elif key == "run_c":
@@ -759,12 +757,17 @@ def render_step_tab(code: str, description_md: str, note: str | None = None):
     # "force past". For first-run, hide it (less clutter).
     if has_previous_run:
         st.checkbox(
-            "Generate brand-new results (slower — ignore last run's cache)",
+            "Generate fresh results from scratch (slower — ignores the last run's saved scenarios)",
             value=False,
             key=f"regen_{key}",
-            help="By default, expensive AI work from the last run is reused so "
-                 "tweaking weights or counts re-ranks instantly. Turn this on "
-                 "to make the AI write fresh scenarios from scratch.",
+            help=(
+                "**When you change weights or counts** and click Run: the system "
+                "re-ranks instantly using the saved scenarios from the last run, "
+                "so you'll see different items picked out — fast and free.\n\n"
+                "**When you keep all settings the same**: the result will be "
+                "identical to the last run unless you turn this on, which makes "
+                "the AI generate completely new scenarios from scratch."
+            ),
         )
 
     run_label = "▶  Run this step"
@@ -787,7 +790,9 @@ def render_step_tab(code: str, description_md: str, note: str | None = None):
         st.rerun()
 
     # ─── Live progress card (only when this step is running) ───
-    step_progress_card(key)
+    # Accent matches the step (① blue / ② teal / ③ orange / ④ purple) so the
+    # running state visually stands out against the grey settings cards.
+    step_progress_card(key, accent=color)
 
     # ─── Last-run result card ──────────────────────────────────
     summary = st.session_state.last_summary.get(key)
@@ -801,7 +806,7 @@ def render_step_tab(code: str, description_md: str, note: str | None = None):
                 "**What you can try:**\n"
                 "- Lower the count parameter (e.g. *Number of scenarios*) and try again\n"
                 "- Verify the **Setup** tab — Topic / Time horizon / Industries should not be empty\n"
-                "- If failure persists, share `pipeline.log` with the JRI team"
+                "- If failure persists, share the log file with the LivingLab+ team"
             )
     elif summary and last_at:
         with st.container(border=True):
@@ -816,9 +821,9 @@ def render_step_tab(code: str, description_md: str, note: str | None = None):
             if skipped:
                 st.warning(
                     f"⚠ {skipped} item(s) in the preview had no title and "
-                    "were skipped — this usually means the LLM returned "
-                    "malformed JSON. The total count still includes them; "
-                    "open the JSON download to inspect."
+                    "were skipped — this usually means the AI returned bad "
+                    "data. The total count still includes them; open the "
+                    "JSON download to inspect."
                 )
 
             # Inline downloads — saves a trip to the Results tab
@@ -862,11 +867,16 @@ def render_step_tab(code: str, description_md: str, note: str | None = None):
     # ─── Bottom prev/next hints ──────────────────────────────
     nav = STEP_NAV.get(code)
     if nav:
+        # Plain-text hint, NOT clickable. Streamlit's st.tabs has no API for
+        # programmatic tab switching, so we just remind the user where to
+        # click in the tab bar at the top of the page.
         st.markdown(
-            f"<div style='margin-top:1.5rem;display:flex;justify-content:space-between;"
-            f"font-size:0.8rem;color:#9ca3af'>"
-            f"<span>← {nav['prev']}</span>"
-            f"<span>{nav['next']} →</span>"
+            f"<div style='margin-top:1.5rem;text-align:center;"
+            f"font-size:0.75rem;color:#9ca3af;line-height:1.5'>"
+            f"<span style='display:inline-block;padding:0 0.5rem'>← Previous: <b>{nav['prev']}</b></span>"
+            f"<span style='display:inline-block;padding:0 0.5rem'>Next: <b>{nav['next']}</b> →</span>"
+            f"<br><span style='font-size:0.7rem;font-style:italic'>"
+            f"(use the tab bar at the top of the page to switch)</span>"
             f"</div>",
             unsafe_allow_html=True,
         )
@@ -988,10 +998,11 @@ def header_running_badge():
 
 
 @st.fragment(run_every="2s")
-def step_progress_card(step_key: str):
+def step_progress_card(step_key: str, accent: str = "#6366f1"):
     """Big progress card with phase label + bar + elapsed. Renders only when
     the currently-running step matches `step_key`, so each tab shows its own
-    card inline below the Run button."""
+    card inline below the Run button. `accent` is the step's color so the
+    running state visually pops against the grey settings cards above."""
     if not st.session_state.get("running"):
         return
     p = st.session_state.get("run_progress") or {}
@@ -999,16 +1010,27 @@ def step_progress_card(step_key: str):
         return
     elapsed = int(time.time() - p.get("start_time", time.time()))
     mins, secs = divmod(elapsed, 60)
-    with st.container(border=True):
-        st.markdown(f"⏱ **Running…** {p.get('phase_label', '')}")
-        total = p.get("phase_total", 0) or 0
-        num = p.get("phase_num", 0) or 0
-        if total > 0:
-            st.progress(min(num / total, 1.0))
-        st.caption(
-            f"Elapsed: {mins}m {secs:02d}s · This card auto-refreshes every 2 seconds. "
-            f"You can switch tabs while it runs."
-        )
+    # Outer wrapper carries the per-step accent so the running card is
+    # visually distinct from the grey-bordered settings card.
+    st.markdown(
+        f"<div style='border:1px solid {accent}; border-left:4px solid {accent}; "
+        f"background:{accent}0d; border-radius:8px; padding:0.8rem 1rem; margin:0.5rem 0'>"
+        f"<div style='color:{accent}; font-weight:600; margin-bottom:0.25rem'>"
+        f"⏱ Running… {p.get('phase_label', '')}"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+    total = p.get("phase_total", 0) or 0
+    num = p.get("phase_num", 0) or 0
+    if total > 1:
+        st.progress(min(num / total, 1.0))
+    st.markdown(
+        f"<div style='font-size:0.8rem; color:#6b7280; margin-top:0.4rem'>"
+        f"Elapsed: {mins}m {secs:02d}s · auto-refreshes every 2s · "
+        f"you can switch tabs while it runs."
+        f"</div></div>",
+        unsafe_allow_html=True,
+    )
 
 
 # ─── Setup tab ──────────────────────────────────────────
@@ -1318,7 +1340,7 @@ def _gen_pptx():
             raw = (r.stderr or r.stdout or "unknown error").strip()
             err = raw.splitlines()[0][:120] if raw else "unknown error"
             st.session_state.ppt_status = (
-                f"Error: {err}  ·  Share this with the JRI team if it persists."
+                f"Error: {err}  ·  Share this with the LivingLab+ team if it persists."
             )
             logger.error(f"generate_pptx.js failed (rc={r.returncode}): {raw[:1000]}")
     except FileNotFoundError:
@@ -1337,14 +1359,14 @@ def _gen_pptx():
             except Exception as e:
                 logger.warning(f"_gen_pptx: cleanup partial pptx failed: {e}")
         st.session_state.ppt_status = (
-            "Error: PowerPoint generation timed out after 3 minutes. "
-            "Try again, or share this with the JRI team."
+            "Error: PowerPoint generation took longer than expected. "
+            "Try again, or contact the LivingLab+ team."
         )
     except Exception as e:
         logger.exception("generate_pptx.js unexpected failure")
         st.session_state.ppt_status = (
             f"Error: {type(e).__name__}: {str(e)[:120]}  ·  "
-            "Share this with the JRI team if it persists."
+            "Share this with the LivingLab+ team if it persists."
         )
 
 
@@ -1427,7 +1449,7 @@ def main():
     st.markdown(
         '<h2 style="margin-bottom:0">🔮 JRI Living Lab+ Pipeline</h2>'
         '<div style="color:#6b7280;font-size:0.9rem;margin-top:0.1rem">'
-        f'Topic: <b>{cfg.TOPIC}</b> · Output: <code>{cfg.OUTPUT_DIR.name}</code>'
+        f'Topic: <b>{cfg.TOPIC}</b>'
         '</div>',
         unsafe_allow_html=True,
     )
