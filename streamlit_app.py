@@ -152,6 +152,13 @@ SACRED_CACHES: frozenset[str] = frozenset({
 })
 
 
+# Process-wide run gate. st.session_state.running is per-tab, so two browser
+# tabs would otherwise both pass the "is anything running" check and spawn
+# concurrent workers that race on the same output files.
+_RUN_LOCK = threading.Lock()
+_RUN_GATE = {"running": False, "step": None}
+
+
 # Mirror destination for sacred caches. Lives outside the project tree so a
 # `rm -rf` of the repo, a `git clean -fdx`, or a fresh deploy that forgets to
 # copy data/intermediate/ doesn't lose both copies at once.
@@ -182,6 +189,13 @@ def sync_sacred_backups() -> None:
         logger.warning(f"sacred-backup: cannot prepare directories: {e}")
         return
 
+    def _atomic_copy(src: Path, dst: Path) -> None:
+        # tmp + os.replace prevents a concurrent tab from observing a
+        # half-written dst and copying it back over a good src.
+        tmp = dst.with_suffix(dst.suffix + ".tmp")
+        shutil.copy2(src, tmp)
+        os.replace(tmp, dst)
+
     for fn in SACRED_CACHES:
         primary = cfg.INTERMEDIATE_DIR / fn
         mirror = backup_dir / fn
@@ -190,10 +204,10 @@ def sync_sacred_backups() -> None:
                 # Keep mirror up to date. The 1s slack avoids spurious copies
                 # on filesystems with coarse mtime resolution.
                 if not mirror.exists() or primary.stat().st_mtime > mirror.stat().st_mtime + 1:
-                    shutil.copy2(primary, mirror)
+                    _atomic_copy(primary, mirror)
                     logger.info(f"sacred-backup: synced {fn} → {backup_dir}")
             elif mirror.exists():
-                shutil.copy2(mirror, primary)
+                _atomic_copy(mirror, primary)
                 logger.warning(
                     f"sacred-backup: RESTORED {fn} from {backup_dir} — "
                     f"the primary copy in {cfg.INTERMEDIATE_DIR} was missing. "
@@ -251,15 +265,16 @@ def all_steps_complete() -> bool:
 
 
 @st.cache_data(show_spinner=False, max_entries=20)
-def cached_read_bytes(path_str: str, mtime: float) -> bytes:
-    """Cache file bytes for download buttons. The `mtime` arg is part of the
-    cache key, so the cache invalidates automatically when the file changes."""
+def cached_read_bytes(path_str: str, mtime: float, size: int) -> bytes:
+    """Cache download bytes keyed by (mtime, size); mtime alone is unsafe on
+    filesystems with 1-second resolution (SMB, FAT)."""
     return Path(path_str).read_bytes()
 
 
 def file_bytes_for_download(path: Path) -> bytes:
     """Convenience wrapper: pull file bytes through the cache."""
-    return cached_read_bytes(str(path), path.stat().st_mtime)
+    s = path.stat()
+    return cached_read_bytes(str(path), s.st_mtime, s.st_size)
 
 
 def fmt_duration(seconds: float | int | None) -> str:
@@ -303,6 +318,10 @@ def init_state():
     # Live-progress state — written from worker thread, read by progress_panel fragment
     st.session_state.setdefault("run_progress", None)  # dict: step, phase_label, phase_num, phase_total, start_time
     st.session_state.setdefault("_last_running_seen", False)
+    # Steps that completed *in this browser session* (vs. hydrated from disk
+    # at page load). Used to default the preview expander to open right after
+    # a fresh run, but collapsed for runs that happened before this session.
+    st.session_state.setdefault("_ran_this_session", set())
 
     # Hydrate from disk on first load so ✓ marks and "Last run: 8m 32s" badges
     # survive page reloads + new sessions.
@@ -324,9 +343,26 @@ def init_state():
 
 
 # ─── Helpers ────────────────────────────────────────────
-def collect_overrides():
-    """Pull current UI param values from session_state. Apply on Run."""
-    return {k: st.session_state[k] for k in UI_PARAMS if k in st.session_state and k not in HIDDEN_PARAMS}
+def collect_overrides() -> tuple[dict, list[str]]:
+    """Pull current UI param values from session_state. Apply on Run.
+
+    Returns ``(overrides_dict, validation_errors)``. Empty TOPIC / TIMEFRAME /
+    INDUSTRIES would otherwise let a run proceed silently against a blank
+    research context, producing meaningless LLM output. Reject up front with
+    a clear message.
+    """
+    ov = {k: st.session_state[k] for k in UI_PARAMS if k in st.session_state and k not in HIDDEN_PARAMS}
+
+    errors: list[str] = []
+    if not (ov.get("TOPIC") or "").strip():
+        errors.append("Topic cannot be empty.")
+    if not (ov.get("TIMEFRAME") or "").strip():
+        errors.append("Time horizon cannot be empty.")
+    industries_raw = (ov.get("INDUSTRIES") or "").strip()
+    if not industries_raw or not [s.strip() for s in industries_raw.split(",") if s.strip()]:
+        errors.append("Industries cannot be empty.")
+
+    return ov, errors
 
 
 def render_param(key: str, spec: dict):
@@ -528,9 +564,11 @@ def check_prerequisites(key: str) -> tuple[bool, str | None]:
         if missing:
             return False, f"Run ① and ③ first — missing: {', '.join(missing)}"
         try:
-            if not read_json(a1):
+            # Cheap size check — fragment polls run every 2s, can't read_json
+            # multi-MB outputs that often. Real output is far larger than 10B.
+            if a1.stat().st_size < 10:
                 return False, "① output is empty — re-run Step ①."
-            if not read_json(c):
+            if c.stat().st_size < 10:
                 return False, "③ output is empty — re-run Step ③."
         except Exception as e:
             return False, f"Could not read upstream outputs: {e}"
@@ -543,8 +581,14 @@ def check_prerequisites(key: str) -> tuple[bool, str | None]:
             return False, "Step ③ needs Step ② metadata — re-run ②."
         try:
             meta = read_json(b_meta)
-            if str(meta.get("topic", "") or "") != str(cfg.TOPIC or ""):
-                return False, "Step ③ needs Step ② re-run for current Research Topic."
+            meta_topic = str(meta.get("topic", "") or "").strip()
+            cur_topic = str(cfg.TOPIC or "").strip()
+            # Both must be non-empty AND match. Without the non-empty guard,
+            # two empty strings compare equal and we'd run with no topic.
+            if not cur_topic:
+                return False, "Topic is empty — fill it in on the Setup tab first."
+            if not meta_topic or meta_topic != cur_topic:
+                return False, "Step ③ needs Step ② re-run for the current Research Topic."
         except Exception as e:
             return False, f"Could not read Step ② metadata: {e}"
     return True, None
@@ -569,12 +613,14 @@ def build_summary(key: str) -> dict | None:
     except Exception:
         return None
     if not data:
-        return {"count": 0, "label": label, "previews": []}
+        return {"count": 0, "label": label, "previews": [], "skipped_titles": 0}
     limit = 50 if key == "run_b" else 10
     previews = []
+    skipped = 0
     for it in data[:limit]:
         title = (it.get(tk) or it.get("title") or "").strip()
         if not title:
+            skipped += 1
             continue
         entry = {"title": title}
         if key == "run_a1":
@@ -583,7 +629,12 @@ def build_summary(key: str) -> dict | None:
             if frm or to:
                 entry["shift"] = f"{frm} → {to}"
         previews.append(entry)
-    return {"count": len(data), "label": label, "previews": previews}
+    return {
+        "count": len(data),
+        "label": label,
+        "previews": previews,
+        "skipped_titles": skipped,
+    }
 
 
 def run_step(key: str, ov: dict, phase_cb):
@@ -761,6 +812,15 @@ def render_step_tab(code: str, description_md: str, note: str | None = None):
             st.markdown(count_line)
             st.caption(meta_line)
 
+            skipped = summary.get("skipped_titles", 0) or 0
+            if skipped:
+                st.warning(
+                    f"⚠ {skipped} item(s) in the preview had no title and "
+                    "were skipped — this usually means the LLM returned "
+                    "malformed JSON. The total count still includes them; "
+                    "open the JSON download to inspect."
+                )
+
             # Inline downloads — saves a trip to the Results tab
             base = STEP_OUTPUT.get(key)
             if base:
@@ -789,7 +849,7 @@ def render_step_tab(code: str, description_md: str, note: str | None = None):
             # Preview expanded if the run just happened in this session;
             # collapsed if hydrated from disk on first page load (less noisy).
             previews = summary.get("previews") or []
-            preview_open = key in st.session_state.get("last_duration", {})
+            preview_open = key in st.session_state.get("_ran_this_session", set())
             if previews:
                 with st.expander(f"Preview titles ({len(previews)})", expanded=preview_open):
                     for i, pv in enumerate(previews, 1):
@@ -815,12 +875,26 @@ def render_step_tab(code: str, description_md: str, note: str | None = None):
 def execute_run(key: str, regen: bool):
     """Spawn a worker thread for the pipeline step. Returns immediately so the
     UI stays responsive; the progress_panel fragment polls run_progress for
-    live updates and triggers a full rerun when the worker finishes."""
-    if st.session_state.running:
-        st.warning("Already running — please wait.")
+    live updates and triggers a full rerun when the worker finishes.
+
+    _RUN_LOCK + _RUN_GATE prevent double-spawn from rapid clicks or a second
+    browser tab — both would otherwise race through archive + clear_cache.
+    """
+    ov, errors = collect_overrides()
+    if errors:
+        st.error("Cannot run: " + " ".join(errors) + " Please fix in the **Setup** tab.")
         return
 
-    st.session_state.running = True
+    with _RUN_LOCK:
+        if _RUN_GATE["running"] or st.session_state.get("running"):
+            busy = (_RUN_GATE.get("step") or "").removeprefix("run_").upper()
+            label = STEPS.get(busy, {}).get("label", "another step")
+            st.warning(f"Already running — please wait for {label} to finish.")
+            return
+        _RUN_GATE["running"] = True
+        _RUN_GATE["step"] = key
+        st.session_state.running = True
+
     st.session_state.last_error.pop(key, None)
     st.session_state.last_summary.pop(key, None)
     st.session_state.run_progress = {
@@ -834,7 +908,6 @@ def execute_run(key: str, regen: bool):
     if regen:
         clear_regen_cache(key)
 
-    ov = collect_overrides()
     session = st.session_state  # capture binding for thread closure
 
     def _phase_cb(label: str, num: int = 0, total: int = 0):
@@ -858,17 +931,20 @@ def execute_run(key: str, regen: bool):
                 session.last_summary[key] = summary
             session.last_run_at[key] = stamp
             session.last_duration[key] = duration
+            session._ran_this_session.add(key)
             if summary is not None:
                 persist_summary(key, summary, stamp, duration)
-            # Auto-uncheck the force-regen checkbox so the next run defaults
-            # back to the cheap, cache-reusing behaviour.
-            session.pop(f"regen_{key}", None)
         except Exception as e:
             logger.exception(f"{key} failed")
             session.last_error[key] = f"{type(e).__name__}: {e}"
         finally:
+            # Clear regen checkbox on every path so a failure doesn't keep it sticky.
+            session.pop(f"regen_{key}", None)
             session.running = False
             session.run_progress = None
+            with _RUN_LOCK:
+                _RUN_GATE["running"] = False
+                _RUN_GATE["step"] = None
 
     t = threading.Thread(target=_worker, daemon=True)
     # CRITICAL: attach Streamlit script-run context so the thread can safely
@@ -1016,13 +1092,20 @@ def render_d_matrix():
         "low_priority": "Low priority",
     }
 
+    def _coerce_num(v) -> float:
+        # A string would silently turn the plotly axis categorical.
+        try:
+            return float(v) if v not in (None, "") else 0.0
+        except (ValueError, TypeError):
+            return 0.0
+
     fig = go.Figure()
     by_q: dict[str, list] = {}
     for i, s in enumerate(data, 1):
         q = s.get("matrix_quadrant", "low_priority") or "low_priority"
         by_q.setdefault(q, []).append({
-            "x": s.get("impact_score", 0) or 0,
-            "y": s.get("unexpected_score", 0) or 0,
+            "x": _coerce_num(s.get("impact_score")),
+            "y": _coerce_num(s.get("unexpected_score")),
             "name": f"#{i} {(s.get('opportunity_title') or s.get('title') or '')[:50]}",
         })
 
@@ -1075,7 +1158,12 @@ def render_cost_summary():
         if by_step:
             with st.expander("Per-step breakdown", expanded=False):
                 rows = []
-                for step, stats in sorted(by_step.items(), key=lambda kv: -(kv[1].get("cost_usd") or 0)):
+                def _cost(stats):
+                    try:
+                        return float(stats.get("cost_usd") or 0)
+                    except (ValueError, TypeError):
+                        return 0.0
+                for step, stats in sorted(by_step.items(), key=lambda kv: -_cost(kv[1])):
                     rows.append({
                         "Step": step,
                         "Model": stats.get("model", ""),
@@ -1151,6 +1239,7 @@ def render_pptx():
         st.caption("Build a Japanese PowerPoint deck from the current Expected, Unexpected, and Opportunity scenarios.")
 
         ready = all_steps_complete()
+        running = st.session_state.get("running", False)
         if not ready:
             missing = [STEPS[c]["label"] for c in ("A1", "B", "C", "D")
                        if not step_output_exists(STEPS[c]["key"])]
@@ -1158,8 +1247,12 @@ def render_pptx():
                 f"Run all four steps before generating the PowerPoint — still missing: "
                 + ", ".join(missing)
             )
+        elif running:
+            st.info("A pipeline step is currently running — wait for it to finish before generating the PowerPoint.")
 
-        if st.button("Generate PPT", key="gen_pptx", disabled=not ready):
+        # Disable while another step is running too: _gen_pptx blocks the main
+        # script thread, which would freeze the live progress fragment.
+        if st.button("Generate PPT", key="gen_pptx", disabled=(not ready) or running):
             # subprocess.run blocks the main script thread for ~1–2 minutes.
             # Wrap in a spinner so the page doesn't appear frozen.
             with st.spinner("Generating PowerPoint (~1–2 min)... please wait."):
@@ -1196,9 +1289,21 @@ def render_pptx():
 
 def _gen_pptx():
     st.session_state.ppt_status = "Generating..."
+    t0 = time.time()
     try:
         subdir = cfg.OUTPUT_DIR.relative_to(cfg.BASE_DIR)
-        env = {**os.environ, "PPTX_BASE": str(subdir), "PPTX_LANGS": "ja"}
+        # Allowlist only what node needs. Passing the parent process's full
+        # environment would leak ANTHROPIC_API_KEY / OPENAI_API_KEY / AWS
+        # creds etc. into the subprocess; node stack traces could then echo
+        # secrets back into the UI on failure.
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": os.environ.get("HOME", ""),
+            "NODE_ENV": os.environ.get("NODE_ENV", "production"),
+            "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+            "PPTX_BASE": str(subdir),
+            "PPTX_LANGS": "ja",
+        }
         r = subprocess.run(
             ["node", "generate_pptx.js"],
             cwd=str(cfg.BASE_DIR),
@@ -1222,6 +1327,15 @@ def _gen_pptx():
             "PowerPoint generation requires running locally."
         )
     except subprocess.TimeoutExpired:
+        # Clean up any half-written .pptx the timeout may have left behind so
+        # the next download isn't a corrupt file masquerading as a fresh one.
+        for pf in cfg.OUTPUT_DIR.glob("*ja*.pptx"):
+            try:
+                if pf.stat().st_mtime >= t0:
+                    pf.unlink()
+                    logger.warning(f"_gen_pptx: removed partial {pf.name} after timeout")
+            except Exception as e:
+                logger.warning(f"_gen_pptx: cleanup partial pptx failed: {e}")
         st.session_state.ppt_status = (
             "Error: PowerPoint generation timed out after 3 minutes. "
             "Try again, or share this with the JRI team."
