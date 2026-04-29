@@ -1,508 +1,1409 @@
 """
-AI Scenario Pipeline — Streamlit Web Interface
-==============================================
-Streamlit deployment version for running the scenario generation pipeline.
+AI Scenario Pipeline — Streamlit Web UI
+========================================
+Setup → ① Expected → ② Weak Signals → ③ Unexpected → ④ Opportunities → Results
 
-Usage:
+Run:
     streamlit run streamlit_app.py
 """
-import streamlit as st
-import sys
-import logging
 import json
-from pathlib import Path
+import logging
+import os
+import shutil
+import subprocess
+import sys
+import threading
+import time
 from datetime import datetime
-import traceback
+from pathlib import Path
 
-# Ensure project root is in path
+import streamlit as st
+from streamlit.runtime.scriptrunner import add_script_run_ctx
+
+# Ensure project root on path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import config as cfg
-from steps import step_a1, step_b, step_c, step_d
+from config import UI_PARAMS, apply_overrides
+from utils.data_io import read_json, save_json
 from utils.llm_client import get_client
 from utils.openai_client import get_openai_client
-from utils.data_io import save_json, read_json
 
-# ─── Page Configuration ─────────────────────────────────
+logger = logging.getLogger("pipeline")
+
+
+# ─── Page Config ────────────────────────────────────────
 st.set_page_config(
-    page_title="AI Scenario Pipeline",
+    page_title="JRI Living Lab+ Pipeline",
     page_icon="🔮",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed",
 )
 
-# ─── Custom CSS ─────────────────────────────────────────
 st.markdown("""
 <style>
-    .main-header {
-        font-size: 2.5rem;
-        font-weight: 700;
-        color: #1f2937;
-        margin-bottom: 0.5rem;
+    .block-container { padding-top: 1.5rem; padding-bottom: 2rem; max-width: 1100px; }
+    h1, h2, h3 { color: #1f2937; }
+    .scn-step-header {
+        display: flex; align-items: center; gap: 0.5rem;
+        margin-bottom: 0.25rem;
     }
-    .sub-header {
-        font-size: 1.1rem;
-        color: #6b7280;
-        margin-bottom: 2rem;
+    .scn-step-title { font-size: 1.15rem; font-weight: 600; color: #1f2937; }
+    .scn-step-sub { font-size: 0.85rem; color: #6b7280; margin-bottom: 0.5rem; }
+    .scn-info {
+        background: #eef2ff;
+        border-left: 3px solid #6366f1;
+        padding: 0.5rem 0.75rem;
+        border-radius: 6px;
+        font-size: 0.85rem;
+        color: #4338ca;
+        margin-bottom: 0.75rem;
     }
-    .step-card {
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border: 1px solid #e5e7eb;
-        margin: 0.5rem 0;
-    }
-    .success-box {
-        padding: 1rem;
-        background-color: #d1fae5;
-        border-left: 4px solid #10b981;
-        border-radius: 0.25rem;
-        margin: 1rem 0;
-    }
-    .error-box {
-        padding: 1rem;
-        background-color: #fee2e2;
-        border-left: 4px solid #ef4444;
-        border-radius: 0.25rem;
-        margin: 1rem 0;
-    }
-    .info-box {
-        padding: 1rem;
-        background-color: #dbeafe;
-        border-left: 4px solid #3b82f6;
-        border-radius: 0.25rem;
-        margin: 1rem 0;
-    }
-    .metric-card {
-        text-align: center;
-        padding: 1rem;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        border-radius: 0.5rem;
-    }
+    /* Hide hamburger noise */
+    [data-testid="stToolbar"] { visibility: hidden; }
+    footer { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ─── Logging Setup ──────────────────────────────────────
-def setup_logging():
-    """Setup logging for the pipeline."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler(cfg.BASE_DIR / "pipeline.log", encoding="utf-8"),
+# ─── Step metadata ──────────────────────────────────────
+STEPS = {
+    "A1": {
+        "key": "run_a1",
+        "label": "① Expected Scenarios",
+        "title": "Expected Scenarios",
+        "sub": "Identify structural changes from news articles",
+        "icon": "📊",
+        "color": "#1976D2",
+        "accent": "a1",
+        "section": "A1 Expected",
+        "tab_label": "① Expected",
+    },
+    "B": {
+        "key": "run_b",
+        "label": "② Weak Signals",
+        "title": "Weak Signals",
+        "sub": "Score and select emerging signals",
+        "icon": "📡",
+        "color": "#00897B",
+        "accent": "b",
+        "section": "B Weak Signal",
+        "tab_label": "② Weak Signals",
+    },
+    "C": {
+        "key": "run_c",
+        "label": "③ Unexpected Scenarios",
+        "title": "Unexpected Scenarios",
+        "sub": "Generate surprising future scenarios from signals",
+        "icon": "🔮",
+        "color": "#F57C00",
+        "accent": "c",
+        "section": "C Unexpected",
+        "tab_label": "③ Unexpected",
+    },
+    "D": {
+        "key": "run_d",
+        "label": "④ Opportunities",
+        "title": "Opportunities",
+        "sub": "Discover business opportunities by combining expected and unexpected scenarios",
+        "icon": "💡",
+        "color": "#7B1FA2",
+        "accent": "d",
+        "section": "D Opportunity",
+        "tab_label": "④ Opportunities",
+    },
+}
+
+# Params hidden from UI (translation removed; SMOKE_TEST is dev-only)
+HIDDEN_PARAMS = {"TRANSLATE_ENABLED"}
+
+# Output filename pattern per step (used for ✓ markers + download buttons)
+STEP_OUTPUT = {
+    "run_a1": "A1_expected_scenarios",
+    "run_b":  "B_selected_weak_signals",
+    "run_c":  "C_unexpected_scenarios",
+    "run_d":  "D_opportunity_scenarios",
+}
+
+# ┌─────────────────────────────────────────────────────────────────┐
+# │  SACRED CACHES — must NEVER be deleted by any UI action.        │
+# │                                                                 │
+# │  These two files are the most expensive things in the pipeline. │
+# │  Re-creating them costs hours of API time and >$50 each.        │
+# │                                                                 │
+# │  - a1_phase1_summaries.json: per-article LLM summaries of all   │
+# │    ~6,135 news articles. Generated by step_a1.phase1_summarize. │
+# │  - b_phase1_scored.json: per-signal LLM scores on 3 dimensions  │
+# │    for all ~9,004 weak signals. Generated by step_b.score_      │
+# │    signals.                                                     │
+# │                                                                 │
+# │  Their accompanying *_checkpoint.json files are also preserved  │
+# │  so that an interrupted run can resume from the last batch.     │
+# │                                                                 │
+# │  clear_regen_cache() defensively filters out anything in this   │
+# │  set even if a future maintainer accidentally adds one to its   │
+# │  target list. Do NOT remove this guard.                         │
+# └─────────────────────────────────────────────────────────────────┘
+SACRED_CACHES: frozenset[str] = frozenset({
+    "a1_phase1_summaries.json",
+    "a1_phase1_checkpoint.json",
+    "b_phase1_scored.json",
+    "b_phase1_checkpoint.json",
+})
+
+
+# Mirror destination for sacred caches. Lives outside the project tree so a
+# `rm -rf` of the repo, a `git clean -fdx`, or a fresh deploy that forgets to
+# copy data/intermediate/ doesn't lose both copies at once.
+def _sacred_backup_dir() -> Path:
+    return Path.home() / ".cache" / "scenario_pipeline_sacred" / cfg.OUTPUT_DIR.name
+
+
+def sync_sacred_backups() -> None:
+    """Two-way sync of sacred phase-1 caches between data/intermediate/ and a
+    user-home mirror.
+
+    Called once at app startup. Behaviour:
+      - primary newer than mirror → copy to mirror (keep the safety net fresh)
+      - primary missing, mirror present → RESTORE from mirror (loud log)
+      - both missing → leave alone; check_prerequisites() will block any Run
+        and tell the user to contact the JRI team
+
+    This guards against the most common loss vectors: an accidental `rm`,
+    a `git clean`, or a deploy that didn't carry data/intermediate/. It does
+    NOT protect against losing the user's home directory or the whole disk —
+    for that, also keep an off-machine copy (e.g. JRI shared drive).
+    """
+    backup_dir = _sacred_backup_dir()
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        cfg.INTERMEDIATE_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        logger.warning(f"sacred-backup: cannot prepare directories: {e}")
+        return
+
+    for fn in SACRED_CACHES:
+        primary = cfg.INTERMEDIATE_DIR / fn
+        mirror = backup_dir / fn
+        try:
+            if primary.exists():
+                # Keep mirror up to date. The 1s slack avoids spurious copies
+                # on filesystems with coarse mtime resolution.
+                if not mirror.exists() or primary.stat().st_mtime > mirror.stat().st_mtime + 1:
+                    shutil.copy2(primary, mirror)
+                    logger.info(f"sacred-backup: synced {fn} → {backup_dir}")
+            elif mirror.exists():
+                shutil.copy2(mirror, primary)
+                logger.warning(
+                    f"sacred-backup: RESTORED {fn} from {backup_dir} — "
+                    f"the primary copy in {cfg.INTERMEDIATE_DIR} was missing. "
+                    f"This usually means someone cleaned the data/ directory; "
+                    f"please confirm the file is intact and tell the JRI team."
+                )
+        except Exception as e:
+            logger.warning(f"sacred-backup: {fn} sync/restore failed: {e}")
+
+
+# ─── Persistence (so ✓ marks + last-run info survive page reload) ───────
+def _summary_file():
+    return cfg.INTERMEDIATE_DIR / "_last_run_summary.json"
+
+
+def load_persisted_summaries() -> dict:
+    p = _summary_file()
+    if not p.exists():
+        return {}
+    try:
+        data = read_json(p)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def persist_summary(key: str, summary: dict, at: str, duration_s: float | None):
+    """Persist the latest run summary to disk so ✓ marks survive page reload.
+
+    Writes atomically via tmp + os.replace so two browser tabs racing on the
+    same file can't corrupt it (last-write-wins is acceptable; partial JSON is
+    not).
+    """
+    try:
+        data = load_persisted_summaries()
+        data[key] = {**summary, "at": at, "duration_s": duration_s}
+        cfg.INTERMEDIATE_DIR.mkdir(parents=True, exist_ok=True)
+        target = _summary_file()
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        save_json(data, tmp)
+        os.replace(tmp, target)
+    except Exception as e:
+        logger.warning(f"persist_summary failed: {e}")
+
+
+def step_output_exists(key: str) -> bool:
+    base = STEP_OUTPUT.get(key)
+    if not base:
+        return False
+    return (cfg.OUTPUT_DIR / f"{base}_ja.json").exists()
+
+
+def all_steps_complete() -> bool:
+    return all(step_output_exists(k) for k in STEP_OUTPUT)
+
+
+@st.cache_data(show_spinner=False, max_entries=20)
+def cached_read_bytes(path_str: str, mtime: float) -> bytes:
+    """Cache file bytes for download buttons. The `mtime` arg is part of the
+    cache key, so the cache invalidates automatically when the file changes."""
+    return Path(path_str).read_bytes()
+
+
+def file_bytes_for_download(path: Path) -> bytes:
+    """Convenience wrapper: pull file bytes through the cache."""
+    return cached_read_bytes(str(path), path.stat().st_mtime)
+
+
+def fmt_duration(seconds: float | int | None) -> str:
+    if not seconds or seconds <= 0:
+        return ""
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m {s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h {m:02d}m"
+
+
+# ─── Session state init ─────────────────────────────────
+def init_state():
+    """Initialize session_state once. UI_PARAMS values default from cfg."""
+    defaults = {
+        "TOPIC": cfg.TOPIC,
+        "TIMEFRAME": cfg.TIMEFRAME,
+        "INDUSTRIES": ", ".join(cfg.CLIENT_PROFILE.get("industries", [])),
+    }
+    for k, spec in UI_PARAMS.items():
+        if k in HIDDEN_PARAMS:
+            continue
+        if k in st.session_state:
+            continue
+        if k in defaults:
+            st.session_state[k] = defaults[k]
+        else:
+            st.session_state[k] = spec["default"]
+
+    # Per-run state
+    st.session_state.setdefault("running", False)
+    st.session_state.setdefault("last_summary", {})    # step_key -> summary dict
+    st.session_state.setdefault("last_run_at", {})     # step_key -> "YYYY-MM-DD HH:MM"
+    st.session_state.setdefault("last_duration", {})   # step_key -> seconds
+    st.session_state.setdefault("last_error", {})      # step_key -> str
+    st.session_state.setdefault("ppt_status", "")
+    # Live-progress state — written from worker thread, read by progress_panel fragment
+    st.session_state.setdefault("run_progress", None)  # dict: step, phase_label, phase_num, phase_total, start_time
+    st.session_state.setdefault("_last_running_seen", False)
+
+    # Hydrate from disk on first load so ✓ marks and "Last run: 8m 32s" badges
+    # survive page reloads + new sessions.
+    if not st.session_state.get("_hydrated"):
+        persisted = load_persisted_summaries()
+        for key, blob in persisted.items():
+            if not isinstance(blob, dict):
+                continue
+            st.session_state.last_summary[key] = {
+                "count": blob.get("count", 0),
+                "label": blob.get("label", ""),
+                "previews": blob.get("previews") or [],
+            }
+            if blob.get("at"):
+                st.session_state.last_run_at[key] = blob["at"]
+            if blob.get("duration_s"):
+                st.session_state.last_duration[key] = blob["duration_s"]
+        st.session_state["_hydrated"] = True
+
+
+# ─── Helpers ────────────────────────────────────────────
+def collect_overrides():
+    """Pull current UI param values from session_state. Apply on Run."""
+    return {k: st.session_state[k] for k in UI_PARAMS if k in st.session_state and k not in HIDDEN_PARAMS}
+
+
+def render_param(key: str, spec: dict):
+    """Render a single UI_PARAMS row. The widget reads/writes session_state[key]."""
+    label = spec["label"]
+    hint = spec.get("hint", "")
+    typ = spec["type"]
+
+    if typ == "number":
+        # Weights (0–10 small range) get a slider — easier to see ratios at a
+        # glance. Counts (B_TOP_N, etc.) stay as number_input.
+        is_weight = "_WEIGHT_" in key
+        if is_weight:
+            st.slider(
+                label,
+                min_value=int(spec.get("min", 0)),
+                max_value=int(spec.get("max", 10)),
+                step=1,
+                key=key,
+                help=hint or None,
+            )
+        else:
+            st.number_input(
+                label,
+                min_value=spec.get("min", 0),
+                max_value=spec.get("max", 1_000_000),
+                step=1,
+                key=key,
+                help=hint or None,
+            )
+    elif typ == "bool":
+        st.toggle(label, key=key, help=hint or None)
+    elif typ == "select":
+        opts = spec["options"]  # dict of value -> label
+        opt_keys = list(opts.keys())
+        st.selectbox(
+            label,
+            options=opt_keys,
+            format_func=lambda v: opts.get(v, v),
+            key=key,
+            help=hint or None,
+        )
+    elif typ == "text":
+        st.text_input(label, key=key, help=hint or None)
+
+
+def render_settings_section(section: str, exclude: set | None = None):
+    """Render all UI_PARAMS in a given section: main first, advanced in expander."""
+    exclude = (exclude or set()) | HIDDEN_PARAMS
+    items = [(k, v) for k, v in UI_PARAMS.items() if v["section"] == section and k not in exclude]
+    main = [(k, v) for k, v in items if v.get("priority") == "main"]
+    adv = [(k, v) for k, v in items if v.get("priority") == "advanced"]
+
+    for k, v in main:
+        render_param(k, v)
+
+    if adv:
+        active = sum(
+            1 for k, _ in adv
+            if "_WEIGHT_" in k and (st.session_state.get(k, 0) or 0) > 0
+        )
+        with st.expander(f"⚙️ Scoring Weights ({active} active)", expanded=True):
+            st.caption(
+                "All weights equal (e.g. all 1, or all 10) gives the same ranking. "
+                "Change the **ratios** between weights to shift the priority."
+            )
+            for k, v in adv:
+                render_param(k, v)
+
+
+# ─── Pipeline run helpers ───────────────────────────────
+def archive_step_outputs(key: str):
+    """Move a step's existing outputs into history/<ts>/, and invalidate downstream caches.
+
+    Cascade: re-running upstream archives downstream too (matches main app).
+    """
+    prefix_map = {
+        "run_a1": ["A1_expected_scenarios", "D_opportunity_scenarios", "C_used_in_D"],
+        "run_b":  ["B_selected_weak_signals", "C_unexpected_scenarios", "D_opportunity_scenarios", "C_used_in_D"],
+        "run_c":  ["C_unexpected_scenarios", "D_opportunity_scenarios", "C_used_in_D"],
+        "run_d":  ["D_opportunity_scenarios", "C_used_in_D"],
+    }
+    inter_delete = {
+        "run_a1": ["d_phase1_pairs.json", "d_phase2_scenarios.json", "d_phase2_checkpoint.json"],
+        "run_b":  [
+            "c_phase1_clusters.json", "c_phase2_scenarios.json", "c_phase2_checkpoint.json",
+            "d_phase1_pairs.json", "d_phase2_scenarios.json", "d_phase2_checkpoint.json",
         ],
+        "run_c":  ["d_phase1_pairs.json", "d_phase2_scenarios.json", "d_phase2_checkpoint.json"],
+        "run_d":  [],
+    }
+    prefixes = prefix_map.get(key) or []
+    out_dir = cfg.OUTPUT_DIR
+    matches = [p for pf in prefixes for p in out_dir.glob(f"{pf}*") if p.is_file()]
+    if matches:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        archive_dir = out_dir / "history" / f"{ts}_{key}"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        for p in matches:
+            try:
+                shutil.move(str(p), str(archive_dir / p.name))
+            except Exception as e:
+                logger.warning(f"archive {p.name} failed: {e}")
+        logger.info(f"Archived {len(matches)} file(s) to {archive_dir}")
+
+    for fn in inter_delete.get(key, []):
+        if fn in SACRED_CACHES:
+            logger.error(
+                f"archive_step_outputs: refusing to delete sacred cache {fn!r}."
+            )
+            continue
+        p = cfg.INTERMEDIATE_DIR / fn
+        if p.exists():
+            try:
+                p.unlink()
+            except Exception as e:
+                logger.warning(f"delete {fn} failed: {e}")
+
+
+def clear_regen_cache(key: str):
+    """Wipe step's intermediate caches so the AI re-generates fresh.
+    Preserves expensive base caches (A1 article summaries, B signal scoring)."""
+    inter = cfg.INTERMEDIATE_DIR
+    targets = {
+        "run_a1": [
+            "a1_phase2_themes.json", "a1_phase3_scenarios.json",
+            "a1_phase3_checkpoint.json", "a1_phase4_ranked.json", "a1_diversity.json",
+        ],
+        "run_b": [
+            "b_phase2_top3000_candidates.json",
+            "b_phase3_dedup_selected.json",
+            "b_phase3_dedup_selected.meta.json",
+            "b_phase3_dedup_summary.json",
+        ],
+        "run_c": [
+            "c_phase1_clusters.json", "c_phase2_scenarios.json",
+            "c_phase2_checkpoint.json", "c_diversity.json",
+        ],
+        "run_d": [
+            "d_phase1_pairs.json", "d_phase2_scenarios.json", "d_phase2_checkpoint.json",
+        ],
+    }
+    removed = 0
+    for fn in targets.get(key, []):
+        # Belt-and-suspenders: even if the targets dict above is wrong, never
+        # delete a sacred phase-1 cache. Cheap to check, expensive to be wrong.
+        if fn in SACRED_CACHES:
+            logger.error(
+                f"clear_regen_cache: refusing to delete sacred cache {fn!r}. "
+                f"This file represents hours of LLM work — see SACRED_CACHES."
+            )
+            continue
+        p = inter / fn
+        if p.exists():
+            try:
+                p.unlink()
+                removed += 1
+            except Exception as e:
+                logger.warning(f"clear_regen_cache: {p}: {e}")
+    if removed:
+        logger.info(f"{key}: cleared {removed} cache file(s)")
+
+
+def check_prerequisites(key: str) -> tuple[bool, str | None]:
+    """Guard upstream outputs exist before running.
+
+    Two kinds of guards:
+    1. Sacred phase-1 caches must exist (never regenerated from the UI).
+    2. Upstream step output must exist (so this step has data to consume).
+    """
+    # ── Sacred phase-1 cache checks ────────────────────────
+    # If these are missing, refuse to run — the front-end is NEVER allowed to
+    # trigger phase-1 LLM regeneration (each costs hours and ~$50). The CLI
+    # tool is the only legitimate path to recreate them.
+    if key == "run_a1":
+        sf = cfg.INTERMEDIATE_DIR / "a1_phase1_summaries.json"
+        if not sf.exists():
+            return False, (
+                "Cannot run ①: the phase-1 article-summaries cache is missing. "
+                "This cache represents hours of LLM work and is only ever "
+                "generated via the command-line tool. Contact the JRI team "
+                "to restore `a1_phase1_summaries.json`."
+            )
+    if key == "run_b":
+        bf = cfg.INTERMEDIATE_DIR / "b_phase1_scored.json"
+        if not bf.exists():
+            return False, (
+                "Cannot run ②: the phase-1 signal-scoring cache is missing. "
+                "This cache represents hours of LLM work and is only ever "
+                "generated via the command-line tool. Contact the JRI team "
+                "to restore `b_phase1_scored.json`."
+            )
+
+    # ── Upstream-output dependency checks ──────────────────
+    if key == "run_d":
+        a1 = cfg.OUTPUT_DIR / "A1_expected_scenarios_ja.json"
+        c = cfg.OUTPUT_DIR / "C_unexpected_scenarios_ja.json"
+        missing = [p.name for p in (a1, c) if not p.exists()]
+        if missing:
+            return False, f"Run ① and ③ first — missing: {', '.join(missing)}"
+        try:
+            if not read_json(a1):
+                return False, "① output is empty — re-run Step ①."
+            if not read_json(c):
+                return False, "③ output is empty — re-run Step ③."
+        except Exception as e:
+            return False, f"Could not read upstream outputs: {e}"
+    elif key == "run_c":
+        b_cache = cfg.INTERMEDIATE_DIR / "b_phase3_dedup_selected.json"
+        if not b_cache.exists():
+            return False, "Step ③ needs Step ② output — run ② first."
+        b_meta = cfg.INTERMEDIATE_DIR / "b_phase3_dedup_selected.meta.json"
+        if not b_meta.exists():
+            return False, "Step ③ needs Step ② metadata — re-run ②."
+        try:
+            meta = read_json(b_meta)
+            if str(meta.get("topic", "") or "") != str(cfg.TOPIC or ""):
+                return False, "Step ③ needs Step ② re-run for current Research Topic."
+        except Exception as e:
+            return False, f"Could not read Step ② metadata: {e}"
+    return True, None
+
+
+def build_summary(key: str) -> dict | None:
+    """Build a post-run summary card data: count + title previews."""
+    omap = {
+        "run_a1": ("A1_expected_scenarios_ja.json", "scenarios", "title"),
+        "run_b":  ("B_selected_weak_signals_ja.json", "signals", "title"),
+        "run_c":  ("C_unexpected_scenarios_ja.json", "scenarios", "title"),
+        "run_d":  ("D_opportunity_scenarios_ja.json", "opportunities", "opportunity_title"),
+    }
+    if key not in omap:
+        return None
+    fn, label, tk = omap[key]
+    p = cfg.OUTPUT_DIR / fn
+    if not p.exists():
+        return None
+    try:
+        data = read_json(p)
+    except Exception:
+        return None
+    if not data:
+        return {"count": 0, "label": label, "previews": []}
+    limit = 50 if key == "run_b" else 10
+    previews = []
+    for it in data[:limit]:
+        title = (it.get(tk) or it.get("title") or "").strip()
+        if not title:
+            continue
+        entry = {"title": title}
+        if key == "run_a1":
+            frm = (it.get("change_from_keyword") or "").strip()
+            to = (it.get("change_to_keyword") or "").strip()
+            if frm or to:
+                entry["shift"] = f"{frm} → {to}"
+        previews.append(entry)
+    return {"count": len(data), "label": label, "previews": previews}
+
+
+def run_step(key: str, ov: dict, phase_cb):
+    """Execute a step end-to-end. `phase_cb(label, num, total)` is called between
+    phases so the UI can show progress. Safe to call from a worker thread."""
+    apply_overrides(ov)
+
+    # Reset per-run cost trackers
+    try:
+        get_client().tracker.reset()
+        get_openai_client().reset_usage()
+    except Exception as e:
+        logger.warning(f"cost-tracker reset failed: {e}")
+
+    archive_step_outputs(key)
+
+    if key == "run_a1":
+        from steps.step_a1 import phase2_cluster, phase3_generate, phase4_rank
+        phase_cb("① 1/3 — Clustering articles...", 1, 3)
+        themes = phase2_cluster()
+        phase_cb("① 2/3 — Generating scenarios...", 2, 3)
+        scenarios = phase3_generate(themes)
+        phase_cb("① 3/3 — Scoring, filtering, review...", 3, 3)
+        phase4_rank(scenarios)
+
+    elif key == "run_b":
+        # ⚠ DO NOT add `score_signals()` to this UI execution path.
+        #
+        # `score_signals()` may silently re-LLM all 9,000+ weak signals if the
+        # phase-1 checkpoint or scored cache is incomplete or has a stale
+        # signature (e.g. after a prompt-template edit). That is hours of work
+        # and ~$50 of API spend that should NEVER be triggered by a client
+        # clicking a button. The b_phase1_scored.json cache is regenerated
+        # only via the CLI:
+        #
+        #     python run_pipeline.py --step b --phase 1
+        #
+        # check_prerequisites() guards that the cache is present before we
+        # reach this branch. The UI's job from here is just to re-rank and
+        # de-duplicate the existing scores against the current weights.
+        from steps.step_b import diversity_dedup
+        phase_cb("② 1/1 — Ranking & de-duplicating signals...", 1, 1)
+        diversity_dedup()
+
+    elif key == "run_c":
+        from steps.step_c import phase1_cluster, phase1_cluster_pair, phase1_signal_pair, phase2_generate, phase3_rank
+        phase_cb("③ 1/3 — Grouping signals...", 1, 3)
+        if cfg.C_MODE == "cluster_pair":
+            cl = phase1_cluster_pair()
+        elif cfg.C_MODE == "signal_pair":
+            cl = phase1_signal_pair()
+        else:
+            cl = phase1_cluster()
+        phase_cb("③ 2/3 — Generating scenarios...", 2, 3)
+        sc = phase2_generate(cl)
+        phase_cb("③ 3/3 — Scoring & ranking...", 3, 3)
+        phase3_rank(sc)
+
+    elif key == "run_d":
+        from steps.step_d import phase1_random_pairs, phase2_generate, phase3_rank
+        exp = read_json(cfg.OUTPUT_DIR / "A1_expected_scenarios_ja.json")
+        unexp = read_json(cfg.OUTPUT_DIR / "C_unexpected_scenarios_ja.json")
+        phase_cb("④ 1/3 — Pairing scenarios...", 1, 3)
+        pairs = phase1_random_pairs(exp, unexp)
+        phase_cb("④ 2/3 — Generating opportunities...", 2, 3)
+        sc = phase2_generate(pairs, exp, unexp)
+        phase_cb("④ 3/3 — Scoring, filtering, classifying...", 3, 3)
+        phase3_rank(sc)
+
+    # Save per-run cost report
+    try:
+        from run_pipeline import save_cost_report
+        save_cost_report()
+    except Exception as e:
+        logger.warning(f"save_cost_report failed: {e}")
+
+
+# ─── Step tab rendering ─────────────────────────────────
+STEP_NAV = {
+    "A1": {"prev": "Setup",          "next": "② Weak Signals"},
+    "B":  {"prev": "① Expected",     "next": "③ Unexpected"},
+    "C":  {"prev": "② Weak Signals", "next": "④ Opportunities"},
+    "D":  {"prev": "③ Unexpected",   "next": "Results"},
+}
+
+
+def render_step_tab(code: str, description_md: str, note: str | None = None):
+    info = STEPS[code]
+    key = info["key"]
+    color = info["color"]
+
+    # Header
+    st.markdown(
+        f'<div class="scn-step-header">'
+        f'<span style="font-size:1.4rem">{info["icon"]}</span>'
+        f'<span class="scn-step-title" style="color:{color}">{info["title"]}</span>'
+        f'</div>'
+        f'<div class="scn-step-sub">{info["sub"]}</div>',
+        unsafe_allow_html=True,
+    )
+
+    if note:
+        st.markdown(f'<div class="scn-info">{note}</div>', unsafe_allow_html=True)
+
+    # "What this step does" — short description, collapsed by default to keep
+    # the page scannable; the help text is one click away.
+    with st.expander("📖 What this step does", expanded=False):
+        st.markdown(description_md)
+
+    # Settings card
+    with st.container(border=True):
+        st.markdown("**Settings**")
+        render_settings_section(info["section"])
+
+    # ─── Run controls ───────────────────────────────────────
+    running = st.session_state.get("running", False)
+    ok, prereq_err = check_prerequisites(key)
+    last_dur = st.session_state.last_duration.get(key)
+    has_previous_run = step_output_exists(key)
+
+    # Force-regen toggle: only useful when we actually have a previous run to
+    # "force past". For first-run, hide it (less clutter).
+    if has_previous_run:
+        st.checkbox(
+            "Generate brand-new results (slower — ignore last run's cache)",
+            value=False,
+            key=f"regen_{key}",
+            help="By default, expensive AI work from the last run is reused so "
+                 "tweaking weights or counts re-ranks instantly. Turn this on "
+                 "to make the AI write fresh scenarios from scratch.",
+        )
+
+    run_label = "▶  Run this step"
+    if last_dur:
+        run_label += f"   ·   last run: {fmt_duration(last_dur)}"
+
+    run_disabled = running or not ok
+    clicked = st.button(
+        run_label,
+        key=f"runbtn_{key}",
+        type="primary",
+        use_container_width=True,
+        disabled=run_disabled,
+    )
+    if not ok and prereq_err:
+        st.warning(prereq_err)
+    if clicked:
+        regen = bool(st.session_state.get(f"regen_{key}", False))
+        execute_run(key, regen)
+        st.rerun()
+
+    # ─── Live progress card (only when this step is running) ───
+    step_progress_card(key)
+
+    # ─── Last-run result card ──────────────────────────────────
+    summary = st.session_state.last_summary.get(key)
+    last_at = st.session_state.last_run_at.get(key)
+    err = st.session_state.last_error.get(key)
+
+    if err:
+        with st.container(border=True):
+            st.error(f"❌ Last run failed: {err[:300]}")
+            st.markdown(
+                "**What you can try:**\n"
+                "- Lower the count parameter (e.g. *Number of scenarios*) and try again\n"
+                "- Verify the **Setup** tab — Topic / Time horizon / Industries should not be empty\n"
+                "- If failure persists, share `pipeline.log` with the JRI team"
+            )
+    elif summary and last_at:
+        with st.container(border=True):
+            count_line = f"✓ Done — **{summary['count']} {summary['label']}**"
+            meta_line = f"at {last_at}"
+            if last_dur:
+                meta_line += f" · took {fmt_duration(last_dur)}"
+            st.markdown(count_line)
+            st.caption(meta_line)
+
+            # Inline downloads — saves a trip to the Results tab
+            base = STEP_OUTPUT.get(key)
+            if base:
+                ja = cfg.OUTPUT_DIR / f"{base}_ja.json"
+                xlsx = cfg.OUTPUT_DIR / f"{base}.xlsx"
+                dcols = st.columns(3)
+                if xlsx.exists():
+                    dcols[0].download_button(
+                        "📥 Excel",
+                        data=file_bytes_for_download(xlsx),
+                        file_name=xlsx.name,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"step_dl_xlsx_{key}",
+                        use_container_width=True,
+                    )
+                if ja.exists():
+                    dcols[1].download_button(
+                        "📥 JSON",
+                        data=file_bytes_for_download(ja),
+                        file_name=ja.name,
+                        mime="application/json",
+                        key=f"step_dl_json_{key}",
+                        use_container_width=True,
+                    )
+
+            # Preview expanded if the run just happened in this session;
+            # collapsed if hydrated from disk on first page load (less noisy).
+            previews = summary.get("previews") or []
+            preview_open = key in st.session_state.get("last_duration", {})
+            if previews:
+                with st.expander(f"Preview titles ({len(previews)})", expanded=preview_open):
+                    for i, pv in enumerate(previews, 1):
+                        st.markdown(f"**{i}.** {pv['title']}")
+                        if pv.get("shift"):
+                            st.caption(pv["shift"])
+            if key == "run_d":
+                st.caption("→ See the **Opportunity Matrix** in the Results tab.")
+
+    # ─── Bottom prev/next hints ──────────────────────────────
+    nav = STEP_NAV.get(code)
+    if nav:
+        st.markdown(
+            f"<div style='margin-top:1.5rem;display:flex;justify-content:space-between;"
+            f"font-size:0.8rem;color:#9ca3af'>"
+            f"<span>← {nav['prev']}</span>"
+            f"<span>{nav['next']} →</span>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+
+def execute_run(key: str, regen: bool):
+    """Spawn a worker thread for the pipeline step. Returns immediately so the
+    UI stays responsive; the progress_panel fragment polls run_progress for
+    live updates and triggers a full rerun when the worker finishes."""
+    if st.session_state.running:
+        st.warning("Already running — please wait.")
+        return
+
+    st.session_state.running = True
+    st.session_state.last_error.pop(key, None)
+    st.session_state.last_summary.pop(key, None)
+    st.session_state.run_progress = {
+        "step": key,
+        "phase_label": "Starting...",
+        "phase_num": 0,
+        "phase_total": 0,
+        "start_time": time.time(),
+    }
+
+    if regen:
+        clear_regen_cache(key)
+
+    ov = collect_overrides()
+    session = st.session_state  # capture binding for thread closure
+
+    def _phase_cb(label: str, num: int = 0, total: int = 0):
+        prev = session.get("run_progress") or {}
+        session.run_progress = {
+            "step": key,
+            "phase_label": label,
+            "phase_num": num,
+            "phase_total": total,
+            "start_time": prev.get("start_time", time.time()),
+        }
+
+    def _worker():
+        t0 = time.time()
+        try:
+            run_step(key, ov, _phase_cb)
+            duration = time.time() - t0
+            summary = build_summary(key)
+            stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+            if summary is not None:
+                session.last_summary[key] = summary
+            session.last_run_at[key] = stamp
+            session.last_duration[key] = duration
+            if summary is not None:
+                persist_summary(key, summary, stamp, duration)
+            # Auto-uncheck the force-regen checkbox so the next run defaults
+            # back to the cheap, cache-reusing behaviour.
+            session.pop(f"regen_{key}", None)
+        except Exception as e:
+            logger.exception(f"{key} failed")
+            session.last_error[key] = f"{type(e).__name__}: {e}"
+        finally:
+            session.running = False
+            session.run_progress = None
+
+    t = threading.Thread(target=_worker, daemon=True)
+    # CRITICAL: attach Streamlit script-run context so the thread can safely
+    # write to st.session_state. Without this, writes silently miss the user's
+    # session.
+    add_script_run_ctx(t)
+    t.start()
+
+
+# ─── Live progress panels (auto-refresh every 2s while running) ─────────
+# Two fragments: a tiny header badge that shows across all tabs, and a full
+# progress card rendered inline below each step's Run button so clicking Run
+# doesn't scroll the user to the top of the page.
+
+@st.fragment(run_every="2s")
+def header_running_badge():
+    """Compact 'Running ① 1/3 — ...' line in the header area, visible across
+    all tabs. Triggers a full app rerun once when the worker finishes so the
+    step preview shows up automatically."""
+    running = st.session_state.get("running", False)
+    last_seen = st.session_state.get("_last_running_seen", False)
+
+    if running:
+        st.session_state["_last_running_seen"] = True
+        p = st.session_state.get("run_progress") or {}
+        elapsed = int(time.time() - p.get("start_time", time.time()))
+        mins, secs = divmod(elapsed, 60)
+        st.markdown(
+            f"<div style='font-size:0.8rem;color:#b45309;background:#fffbeb;"
+            f"border:1px solid #fde68a;border-radius:6px;padding:0.35rem 0.6rem;"
+            f"margin-bottom:0.5rem'>"
+            f"⏱ <b>Running</b> · {p.get('phase_label', '')} · {mins}m {secs:02d}s"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        return
+
+    if last_seen:
+        st.session_state["_last_running_seen"] = False
+        st.rerun()
+
+
+@st.fragment(run_every="2s")
+def step_progress_card(step_key: str):
+    """Big progress card with phase label + bar + elapsed. Renders only when
+    the currently-running step matches `step_key`, so each tab shows its own
+    card inline below the Run button."""
+    if not st.session_state.get("running"):
+        return
+    p = st.session_state.get("run_progress") or {}
+    if p.get("step") != step_key:
+        return
+    elapsed = int(time.time() - p.get("start_time", time.time()))
+    mins, secs = divmod(elapsed, 60)
+    with st.container(border=True):
+        st.markdown(f"⏱ **Running…** {p.get('phase_label', '')}")
+        total = p.get("phase_total", 0) or 0
+        num = p.get("phase_num", 0) or 0
+        if total > 0:
+            st.progress(min(num / total, 1.0))
+        st.caption(
+            f"Elapsed: {mins}m {secs:02d}s · This card auto-refreshes every 2 seconds. "
+            f"You can switch tabs while it runs."
+        )
+
+
+# ─── Setup tab ──────────────────────────────────────────
+def render_setup():
+    st.markdown("### Setup")
+    st.caption(
+        "Configure your analysis settings here, then move through "
+        "**① → ② → ③ → ④** in the tabs above to generate your scenarios."
+    )
+
+    with st.container(border=True):
+        st.markdown("#### 🌐 Research Settings")
+        st.caption("These settings affect all steps. Adjust before running.")
+        render_settings_section("Global", exclude={"TRANSLATE_ENABLED"})
+
+    with st.container(border=True):
+        st.markdown("#### 📁 Data")
+        st.caption(
+            "These datasets are pre-loaded by JRI for this engagement and "
+            "cannot be modified from this UI."
+        )
+        DISPLAY_COUNTS = {"News articles": 6135, "Weak signals": 9004}
+        for f, label in [(cfg.A1_INPUT_FILE, "News articles"), (cfg.B_INPUT_FILE, "Weak signals")]:
+            count = DISPLAY_COUNTS.get(label)
+            if count is None:
+                try:
+                    import pandas as pd
+                    if Path(f).suffix == ".xlsx" and Path(f).exists():
+                        count = len(pd.read_excel(f))
+                except Exception:
+                    pass
+            line = f"✓ {label}"
+            if count:
+                line += f" — {count:,} items"
+            st.markdown(line)
+
+    # CTA at the bottom — Streamlit doesn't let us programmatically switch
+    # tabs, but a clear pointer to the next step still helps first-time users.
+    st.markdown(
+        "<div style='margin-top:1.25rem;padding:0.75rem 1rem;"
+        "background:#eef2ff;border-left:3px solid #6366f1;border-radius:8px;"
+        "font-size:0.9rem;color:#4338ca'>"
+        "<b>Ready?</b> Click the <b>① Expected</b> tab above to start."
+        "</div>",
+        unsafe_allow_html=True,
     )
 
 
-# ─── Session State Initialization ──────────────────────
-if "pipeline_running" not in st.session_state:
-    st.session_state.pipeline_running = False
-if "last_run_results" not in st.session_state:
-    st.session_state.last_run_results = None
-if "cost_report" not in st.session_state:
-    st.session_state.cost_report = None
-if "selected_config" not in st.session_state:
-    st.session_state.selected_config = "jri_aging"
-
-
-# ─── Helper Functions ───────────────────────────────────
-def ensure_dirs():
-    """Create data directories if they don't exist."""
-    for d in [cfg.INPUT_DIR, cfg.OUTPUT_DIR, cfg.INTERMEDIATE_DIR]:
-        d.mkdir(parents=True, exist_ok=True)
-
-
-def load_topic_config(config_name):
-    """Load topic configuration from configs/ directory."""
-    from config import load_topic_config
-    config_path = cfg.BASE_DIR / "configs" / f"{config_name}.py"
-    if config_path.exists():
-        load_topic_config(str(config_path))
-        return True
-    return False
-
-
-def save_cost_report():
-    """Generate and save cost report."""
-    client = get_client()
-    client.tracker.print_summary()
-    report = client.tracker.to_report()
-    
-    # Merge OpenAI usage
-    openai_report = get_openai_client().cost_report()
-    for step, data in openai_report.items():
-        if step.startswith("_"):
-            continue
-        report["by_step"][step] = data
-    
-    # Recompute totals
-    in_ = sum(v.get("input_tokens", 0) for v in report["by_step"].values())
-    out_ = sum(v.get("output_tokens", 0) for v in report["by_step"].values())
-    report["total"] = {
-        "calls": sum(v.get("calls", 0) for v in report["by_step"].values()),
-        "input_tokens": in_,
-        "output_tokens": out_,
-        "total_tokens": in_ + out_,
-        "cost_usd": round(sum(v.get("cost_usd", 0) for v in report["by_step"].values()), 4),
-    }
-    
-    save_json(report, cfg.OUTPUT_DIR / "cost_report.json")
-    return report
-
-
-def run_step_safe(step_name, step_func):
-    """Run a single step with error handling."""
-    logger = logging.getLogger("pipeline")
+# ─── Results tab ────────────────────────────────────────
+def render_d_matrix():
+    """D opportunity scatter on Unexpectedness × Impact axes."""
+    p = cfg.OUTPUT_DIR / "D_opportunity_scenarios_ja.json"
+    if not p.exists():
+        st.info("Matrix not available yet — run Step ④ first.")
+        return
     try:
-        logger.info(f"Starting Step {step_name}")
-        result = step_func()
-        if result is None:
-            logger.warning(f"Step {step_name} returned None")
-            return []
-        logger.info(f"Step {step_name} completed: {len(result)} items")
-        return result
+        data = read_json(p)
     except Exception as e:
-        logger.exception(f"Step {step_name} FAILED")
-        st.error(f"❌ Step {step_name} failed: {str(e)}")
-        st.code(traceback.format_exc())
-        return []
+        st.warning(f"Could not load D output: {e}")
+        return
+    if not data:
+        st.info("D output is empty.")
+        return
 
+    try:
+        import plotly.graph_objects as go
+    except ImportError:
+        st.warning("plotly not installed — `pip install plotly` to see the matrix.")
+        return
 
-def run_full_pipeline():
-    """Run the complete pipeline A1 → B → C → D."""
-    logger = logging.getLogger("pipeline")
-    logger.info("Starting full pipeline")
-    
-    # Reset cost trackers
-    get_client().tracker.reset()
-    get_openai_client().reset_cost()
-    
-    results = {}
-    step_definitions = [
-        ("A-1", "expected", step_a1.run, "📊 Expected Scenarios"),
-        ("B", "selected_signals", step_b.run, "📡 Weak Signals Selection"),
-        ("C", "unexpected", step_c.run, "🔮 Unexpected Scenarios"),
-        ("D", "opportunities", step_d.run, "💡 Opportunity Scenarios"),
-    ]
-    
-    # Create progress containers
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    for idx, (label, key, func, description) in enumerate(step_definitions):
-        status_text.markdown(f"**{description}**")
-        
-        with st.expander(f"Step {label}: {description}", expanded=True):
-            start_time = datetime.now()
-            result = run_step_safe(label, func)
-            duration = (datetime.now() - start_time).total_seconds()
-            
-            results[key] = result
-            
-            if result:
-                st.success(f"✅ Generated {len(result)} items in {duration:.1f}s")
-            else:
-                st.warning(f"⚠️ Step produced 0 results")
-        
-        progress_bar.progress((idx + 1) / len(step_definitions))
-    
-    status_text.markdown("**✨ Pipeline Complete!**")
-    
-    # Save cost report
-    cost_report = save_cost_report()
-    
-    return results, cost_report
-
-
-def run_single_step(step_choice):
-    """Run a single pipeline step."""
-    # Reset cost trackers
-    get_client().tracker.reset()
-    get_openai_client().reset_cost()
-    
-    step_map = {
-        "Step A-1: Expected Scenarios": ("A-1", step_a1.run),
-        "Step B: Weak Signals Selection": ("B", step_b.run),
-        "Step C: Unexpected Scenarios": ("C", step_c.run),
-        "Step D: Opportunity Scenarios": ("D", step_d.run),
+    COLORS = {
+        "breakthrough": "#7B1FA2",
+        "surprising": "#F57C00",
+        "incremental": "#1976D2",
+        "low_priority": "#9E9E9E",
     }
-    
-    label, func = step_map[step_choice]
-    
-    with st.spinner(f"Running Step {label}..."):
-        start_time = datetime.now()
-        result = run_step_safe(label, func)
-        duration = (datetime.now() - start_time).total_seconds()
-    
-    cost_report = save_cost_report()
-    
-    return {label: result}, cost_report, duration
+    LABELS_Q = {
+        "breakthrough": "Breakthrough",
+        "surprising": "Surprising",
+        "incremental": "Incremental",
+        "low_priority": "Low priority",
+    }
+
+    fig = go.Figure()
+    by_q: dict[str, list] = {}
+    for i, s in enumerate(data, 1):
+        q = s.get("matrix_quadrant", "low_priority") or "low_priority"
+        by_q.setdefault(q, []).append({
+            "x": s.get("impact_score", 0) or 0,
+            "y": s.get("unexpected_score", 0) or 0,
+            "name": f"#{i} {(s.get('opportunity_title') or s.get('title') or '')[:50]}",
+        })
+
+    for q, pts in by_q.items():
+        fig.add_trace(go.Scatter(
+            x=[p["x"] for p in pts],
+            y=[p["y"] for p in pts],
+            mode="markers",
+            name=f"{LABELS_Q.get(q, q)} ({len(pts)})",
+            text=[p["name"] for p in pts],
+            hovertemplate="<b>%{text}</b><br>Impact: %{x}<br>Unexpectedness: %{y}<extra></extra>",
+            marker=dict(size=14, color=COLORS.get(q, "#666"), line=dict(color="#fff", width=2)),
+        ))
+
+    fig.update_layout(
+        title=dict(
+            text="<b>Opportunity Matrix</b><br>"
+                 "<span style='font-size:11px;color:#6b7280'>"
+                 "Unexpectedness × Impact (median-threshold quadrants)</span>",
+            x=0.5, xanchor="center", font=dict(size=15),
+        ),
+        xaxis=dict(title="Impact →", range=[0, 10], gridcolor="#e5e7eb"),
+        yaxis=dict(title="Unexpectedness →", range=[0, 10], gridcolor="#e5e7eb"),
+        plot_bgcolor="#fff",
+        height=520,
+        margin=dict(l=60, r=30, t=70, b=60),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.22, xanchor="center", x=0.5),
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
 
-# ─── Main Interface ─────────────────────────────────────
-def main():
-    # Header
-    st.markdown('<div class="main-header">🔮 AI Scenario Pipeline</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">Generate future scenarios using AI-powered analysis</div>', unsafe_allow_html=True)
-    
-    # Sidebar Configuration
-    with st.sidebar:
-        st.header("⚙️ Configuration")
-        
-        # Topic Selection
-        st.subheader("1️⃣ Select Topic")
-        config_options = {
-            "JRI Aging Society": "jri_aging",
-            "Energy Sustainability": "energy"
-        }
-        selected_topic = st.selectbox(
-            "Topic Configuration",
-            options=list(config_options.keys()),
-            key="topic_selector"
-        )
-        st.session_state.selected_config = config_options[selected_topic]
-        
-        # Load config
-        if load_topic_config(st.session_state.selected_config):
-            st.success(f"✓ Loaded: {cfg.TOPIC}")
-        
-        st.divider()
-        
-        # Step Selection
-        st.subheader("2️⃣ Select Step(s)")
-        run_mode = st.radio(
-            "Run Mode",
-            ["Full Pipeline (A→B→C→D)", "Single Step"],
-            key="run_mode"
-        )
-        
-        if run_mode == "Single Step":
-            step_choice = st.selectbox(
-                "Select Step",
-                [
-                    "Step A-1: Expected Scenarios",
-                    "Step B: Weak Signals Selection",
-                    "Step C: Unexpected Scenarios",
-                    "Step D: Opportunity Scenarios"
-                ]
-            )
-        
-        st.divider()
-        
-        # Advanced Settings
-        with st.expander("🔧 Advanced Settings"):
-            st.markdown("**Generation Counts**")
-            a1_count = st.number_input("A-1 Scenarios", value=10, min_value=1, max_value=50)
-            b_count = st.number_input("B Top Signals", value=2000, min_value=100, max_value=5000, step=100)
-            c_count = st.number_input("C Scenarios", value=10, min_value=1, max_value=50)
-            d_count = st.number_input("D Opportunities", value=10, min_value=1, max_value=50)
-            
-            translate = st.checkbox("Enable Translation (ja→zh)", value=False)
-            
-            if st.button("Apply Settings"):
-                from config import apply_overrides
-                apply_overrides({
-                    "A1_GENERATE_N": a1_count,
-                    "B_TOP_N": b_count,
-                    "C_GENERATE_N": c_count,
-                    "D_GENERATE_N": d_count,
-                    "TRANSLATE_ENABLED": translate
-                })
-                st.success("✓ Settings applied")
-        
-        st.divider()
-        
-        # API Status
-        st.subheader("🔑 API Status")
-        if cfg.ANTHROPIC_API_KEY:
-            st.success("✓ Claude API")
-        else:
-            st.error("✗ Claude API")
-        
-        if cfg.OPENAI_API_KEY:
-            st.success("✓ OpenAI API")
-        else:
-            st.error("✗ OpenAI API")
-    
-    # Main Content Area
-    tab1, tab2, tab3 = st.tabs(["🚀 Run Pipeline", "📊 Results", "💰 Cost Report"])
-    
-    # Tab 1: Run Pipeline
-    with tab1:
-        st.header("Run Pipeline")
-        
-        # Info Box
-        st.markdown("""
-        <div class="info-box">
-            <strong>ℹ️ About the Pipeline</strong><br>
-            This pipeline generates future scenarios through 4 steps:<br>
-            • <strong>Step A-1:</strong> Analyze trends and generate expected scenarios<br>
-            • <strong>Step B:</strong> Select weak signals for unexpected scenario generation<br>
-            • <strong>Step C:</strong> Generate unexpected scenarios from weak signals<br>
-            • <strong>Step D:</strong> Create opportunity scenarios by combining expected and unexpected scenarios
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Run Button
-        col1, col2, col3 = st.columns([2, 1, 2])
-        with col2:
-            if st.button("▶️ Run Pipeline", type="primary", use_container_width=True, disabled=st.session_state.pipeline_running):
-                st.session_state.pipeline_running = True
-                
-                # Setup
-                setup_logging()
-                ensure_dirs()
-                
-                # Run pipeline
-                try:
-                    if run_mode == "Full Pipeline (A→B→C→D)":
-                        results, cost_report = run_full_pipeline()
-                        st.session_state.last_run_results = results
-                        st.session_state.cost_report = cost_report
-                        
-                        # Summary
-                        st.balloons()
-                        st.markdown("""
-                        <div class="success-box">
-                            <strong>✨ Pipeline Complete!</strong><br>
-                            All steps executed successfully. Check the Results and Cost Report tabs.
-                        </div>
-                        """, unsafe_allow_html=True)
-                    else:
-                        results, cost_report, duration = run_single_step(step_choice)
-                        st.session_state.last_run_results = results
-                        st.session_state.cost_report = cost_report
-                        
-                        st.success(f"✅ Step completed in {duration:.1f}s")
-                
-                except Exception as e:
-                    st.error(f"❌ Pipeline failed: {str(e)}")
-                    st.code(traceback.format_exc())
-                
-                finally:
-                    st.session_state.pipeline_running = False
-    
-    # Tab 2: Results
-    with tab2:
-        st.header("Pipeline Results")
-        
-        if st.session_state.last_run_results is None:
-            st.info("👈 Run the pipeline first to see results here")
-        else:
-            results = st.session_state.last_run_results
-            
-            # Summary Metrics
-            col1, col2, col3, col4 = st.columns(4)
-            metrics = [
-                ("Expected", "expected", "📊"),
-                ("Weak Signals", "selected_signals", "📡"),
-                ("Unexpected", "unexpected", "🔮"),
-                ("Opportunities", "opportunities", "💡")
-            ]
-            
-            for col, (label, key, icon) in zip([col1, col2, col3, col4], metrics):
-                with col:
-                    count = len(results.get(key, []))
-                    st.metric(f"{icon} {label}", count)
-            
-            st.divider()
-            
-            # Display Results by Step
-            for label, key, icon in metrics:
-                if key in results and results[key]:
-                    with st.expander(f"{icon} {label} Scenarios ({len(results[key])} items)", expanded=False):
-                        items = results[key][:5]  # Show first 5
-                        for i, item in enumerate(items, 1):
-                            st.markdown(f"**{i}.** {item.get('scenario_title_ja', item.get('scenario_title', 'Untitled'))}")
-                            if 'scenario_description_ja' in item:
-                                st.caption(item['scenario_description_ja'][:200] + "...")
-                            st.divider()
-                        
-                        if len(results[key]) > 5:
-                            st.info(f"... and {len(results[key]) - 5} more items")
-            
-            # Download Section
-            st.divider()
-            st.subheader("📥 Download Results")
-            
-            # Check for output files
-            output_files = list(cfg.OUTPUT_DIR.glob("*.json"))
-            if output_files:
-                cols = st.columns(len(output_files))
-                for col, file_path in zip(cols, output_files):
-                    with col:
-                        with open(file_path, 'r', encoding='utf-8') as f:
-                            st.download_button(
-                                label=f"📄 {file_path.name}",
-                                data=f.read(),
-                                file_name=file_path.name,
-                                mime="application/json"
-                            )
-    
-    # Tab 3: Cost Report
-    with tab3:
-        st.header("Cost Report")
-        
-        if st.session_state.cost_report is None:
-            st.info("👈 Run the pipeline first to see cost report here")
-        else:
-            report = st.session_state.cost_report
-            
-            # Total Cost
-            total = report.get("total", {})
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                st.metric("Total Cost", f"${total.get('cost_usd', 0):.4f}")
-                st.markdown('</div>', unsafe_allow_html=True)
-            
-            with col2:
-                st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                st.metric("API Calls", f"{total.get('calls', 0):,}")
-                st.markdown('</div>', unsafe_allow_html=True)
-            
-            with col3:
-                st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                st.metric("Input Tokens", f"{total.get('input_tokens', 0):,}")
-                st.markdown('</div>', unsafe_allow_html=True)
-            
-            with col4:
-                st.markdown('<div class="metric-card">', unsafe_allow_html=True)
-                st.metric("Output Tokens", f"{total.get('output_tokens', 0):,}")
-                st.markdown('</div>', unsafe_allow_html=True)
-            
-            st.divider()
-            
-            # Cost by Step
-            st.subheader("Cost Breakdown by Step")
-            by_step = report.get("by_step", {})
-            
-            if by_step:
-                import pandas as pd
-                
+def render_cost_summary():
+    cost_path = cfg.OUTPUT_DIR / "cost_report.json"
+    if not cost_path.exists():
+        return
+    try:
+        cost = read_json(cost_path)
+    except Exception:
+        return
+
+    total = cost.get("total", {})
+    by_step = cost.get("by_step", {})
+    with st.container(border=True):
+        st.markdown("#### 💰 Cost Summary")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Total cost (USD)", f"${total.get('cost_usd', 0):.2f}")
+        c2.metric("API calls", f"{total.get('calls', 0):,}")
+        c3.metric("Tokens", f"{total.get('total_tokens', 0):,}")
+
+        if by_step:
+            with st.expander("Per-step breakdown", expanded=False):
                 rows = []
-                for step, data in by_step.items():
+                for step, stats in sorted(by_step.items(), key=lambda kv: -(kv[1].get("cost_usd") or 0)):
                     rows.append({
                         "Step": step,
-                        "Calls": data.get("calls", 0),
-                        "Input Tokens": f"{data.get('input_tokens', 0):,}",
-                        "Output Tokens": f"{data.get('output_tokens', 0):,}",
-                        "Cost (USD)": f"${data.get('cost_usd', 0):.4f}"
+                        "Model": stats.get("model", ""),
+                        "Calls": stats.get("calls", 0),
+                        "Input tokens": f"{stats.get('input_tokens', 0):,}",
+                        "Output tokens": f"{stats.get('output_tokens', 0):,}",
+                        "Cost (USD)": f"${stats.get('cost_usd', 0):.4f}",
                     })
-                
-                df = pd.DataFrame(rows)
-                st.dataframe(df, use_container_width=True, hide_index=True)
-            
-            # Download cost report
-            st.download_button(
-                label="📊 Download Full Cost Report (JSON)",
-                data=json.dumps(report, indent=2, ensure_ascii=False),
-                file_name=f"cost_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-                mime="application/json"
+                import pandas as pd
+                st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+        st.download_button(
+            "📊 Download cost_report.json",
+            data=json.dumps(cost, indent=2, ensure_ascii=False),
+            file_name=f"cost_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json",
+            key="dl_cost_report",
+        )
+
+
+def render_downloads():
+    files = [
+        ("① Expected Scenarios", "A1_expected_scenarios", "#1976D2"),
+        ("② Selected Weak Signals", "B_selected_weak_signals", "#00897B"),
+        ("③ Unexpected Scenarios", "C_unexpected_scenarios", "#F57C00"),
+        ("④ Opportunity Scenarios", "D_opportunity_scenarios", "#7B1FA2"),
+    ]
+    has_any = any((cfg.OUTPUT_DIR / f"{base}_ja.json").exists() for _, base, _ in files)
+    if not has_any:
+        return
+
+    with st.container(border=True):
+        st.markdown("#### 📥 Downloads")
+        for label, base, color in files:
+            ja = cfg.OUTPUT_DIR / f"{base}_ja.json"
+            xlsx = cfg.OUTPUT_DIR / f"{base}.xlsx"
+            if not ja.exists():
+                continue
+            count = "?"
+            try:
+                count = len(read_json(ja))
+            except Exception:
+                pass
+
+            cols = st.columns([4, 1, 1, 1])
+            cols[0].markdown(f"<span style='color:{color};font-weight:600'>{label}</span>", unsafe_allow_html=True)
+            cols[1].caption(f"{count} items")
+            with cols[2]:
+                if xlsx.exists():
+                    st.download_button(
+                        "Excel",
+                        data=file_bytes_for_download(xlsx),
+                        file_name=xlsx.name,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"dl_xlsx_{base}",
+                        use_container_width=True,
+                    )
+            with cols[3]:
+                st.download_button(
+                    "JSON",
+                    data=file_bytes_for_download(ja),
+                    file_name=ja.name,
+                    mime="application/json",
+                    key=f"dl_json_{base}",
+                    use_container_width=True,
+                )
+
+
+def render_pptx():
+    """PowerPoint generation. Requires Node.js + generate_pptx.js on the host."""
+    with st.container(border=True):
+        st.markdown("#### 🎨 PowerPoint Report")
+        st.caption("Build a Japanese PowerPoint deck from the current Expected, Unexpected, and Opportunity scenarios.")
+
+        ready = all_steps_complete()
+        if not ready:
+            missing = [STEPS[c]["label"] for c in ("A1", "B", "C", "D")
+                       if not step_output_exists(STEPS[c]["key"])]
+            st.warning(
+                f"Run all four steps before generating the PowerPoint — still missing: "
+                + ", ".join(missing)
             )
+
+        if st.button("Generate PPT", key="gen_pptx", disabled=not ready):
+            # subprocess.run blocks the main script thread for ~1–2 minutes.
+            # Wrap in a spinner so the page doesn't appear frozen.
+            with st.spinner("Generating PowerPoint (~1–2 min)... please wait."):
+                _gen_pptx()
+
+        status = st.session_state.get("ppt_status", "")
+        if not status:
+            return
+
+        if status.startswith("Error"):
+            st.error(status)
+            return
+        if not status.startswith("✓"):
+            st.info(status)
+            return
+
+        st.success(status)
+
+        # Download appears only after a successful generate. JA only — zh PPT
+        # is not generated since translation was removed from the pipeline.
+        ja_files = sorted(
+            cfg.OUTPUT_DIR.glob("*ja*.pptx"),
+            key=lambda p: -p.stat().st_mtime,
+        )
+        for pf in ja_files[:1]:  # most recent ja file
+            st.download_button(
+                f"📥 Download {pf.name}",
+                data=file_bytes_for_download(pf),
+                file_name=pf.name,
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                key=f"dl_pptx_{pf.name}",
+            )
+
+
+def _gen_pptx():
+    st.session_state.ppt_status = "Generating..."
+    try:
+        subdir = cfg.OUTPUT_DIR.relative_to(cfg.BASE_DIR)
+        env = {**os.environ, "PPTX_BASE": str(subdir), "PPTX_LANGS": "ja"}
+        r = subprocess.run(
+            ["node", "generate_pptx.js"],
+            cwd=str(cfg.BASE_DIR),
+            env=env,
+            capture_output=True, text=True, timeout=180,
+        )
+        if r.returncode == 0:
+            st.session_state.ppt_status = "✓ PPT generated."
+        else:
+            # Trim node stack traces and append a clear recovery hint so the
+            # client knows this isn't something they can fix themselves.
+            raw = (r.stderr or r.stdout or "unknown error").strip()
+            err = raw.splitlines()[0][:120] if raw else "unknown error"
+            st.session_state.ppt_status = (
+                f"Error: {err}  ·  Share this with the JRI team if it persists."
+            )
+            logger.error(f"generate_pptx.js failed (rc={r.returncode}): {raw[:1000]}")
+    except FileNotFoundError:
+        st.session_state.ppt_status = (
+            "Error: Node.js is not installed on this host. "
+            "PowerPoint generation requires running locally."
+        )
+    except subprocess.TimeoutExpired:
+        st.session_state.ppt_status = (
+            "Error: PowerPoint generation timed out after 3 minutes. "
+            "Try again, or share this with the JRI team."
+        )
+    except Exception as e:
+        logger.exception("generate_pptx.js unexpected failure")
+        st.session_state.ppt_status = (
+            f"Error: {type(e).__name__}: {str(e)[:120]}  ·  "
+            "Share this with the JRI team if it persists."
+        )
+
+
+def render_results():
+    st.markdown("### Results")
+    st.caption("Reports, charts, and downloads appear here after running the pipeline.")
+
+    files_exist = any(step_output_exists(k) for k in STEP_OUTPUT)
+    if not files_exist:
+        with st.container(border=True):
+            st.markdown("#### Pipeline progress")
+            st.markdown(
+                "Run the steps in order. Each row checks off as that step completes."
+            )
+            for code in ("A1", "B", "C", "D"):
+                info = STEPS[code]
+                done = step_output_exists(info["key"])
+                mark = "✓" if done else "○"
+                color = "#10b981" if done else "#9ca3af"
+                status = "Done" if done else "Not yet run"
+                st.markdown(
+                    f"<div style='display:flex;align-items:center;gap:0.6rem;padding:0.35rem 0'>"
+                    f"<span style='color:{color};font-weight:700;width:1rem'>{mark}</span>"
+                    f"<span style='color:#1f2937'>{info['label']}</span>"
+                    f"<span style='margin-left:auto;color:#9ca3af;font-size:0.85rem'>{status}</span>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            st.markdown(
+                "<div style='margin-top:0.75rem;font-size:0.85rem;color:#6b7280'>"
+                "→ Start with the <b>① Expected</b> tab above."
+                "</div>",
+                unsafe_allow_html=True,
+            )
+        return
+
+    # D matrix at top if present
+    if (cfg.OUTPUT_DIR / "D_opportunity_scenarios_ja.json").exists():
+        with st.container(border=True):
+            st.markdown("#### 🔮 Opportunity Matrix — Unexpectedness × Impact")
+            render_d_matrix()
+
+    render_cost_summary()
+    render_downloads()
+    render_pptx()
+
+
+# ─── Main ───────────────────────────────────────────────
+def setup_logging():
+    """Configure logging once. Prefer /tmp/pipeline.log so the app works on
+    read-only deployment filesystems (e.g. Streamlit Cloud); fall back to
+    BASE_DIR locally; fall back to stdout-only if neither is writable."""
+    if logging.getLogger().handlers:
+        return
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    for candidate in (Path("/tmp/pipeline.log"), cfg.BASE_DIR / "pipeline.log"):
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            with open(candidate, "a", encoding="utf-8"):
+                pass
+            handlers.append(logging.FileHandler(candidate, encoding="utf-8"))
+            break
+        except (OSError, PermissionError):
+            continue
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=handlers,
+    )
+
+
+def main():
+    setup_logging()
+    init_state()
+    # Auto-mirror + auto-restore sacred caches before anything else runs, so
+    # check_prerequisites and the Run buttons reflect a self-healed state.
+    sync_sacred_backups()
+
+    # Header
+    st.markdown(
+        '<h2 style="margin-bottom:0">🔮 JRI Living Lab+ Pipeline</h2>'
+        '<div style="color:#6b7280;font-size:0.9rem;margin-top:0.1rem">'
+        f'Topic: <b>{cfg.TOPIC}</b> · Output: <code>{cfg.OUTPUT_DIR.name}</code>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Show API-key warnings only when something is misconfigured, not as a
+    # constant green-light — clients don't need to see infra status normally.
+    missing_keys = []
+    if not getattr(cfg, "ANTHROPIC_API_KEY", ""):
+        missing_keys.append("ANTHROPIC_API_KEY (Claude)")
+    if not getattr(cfg, "OPENAI_API_KEY", ""):
+        missing_keys.append("OPENAI_API_KEY (OpenAI)")
+    if missing_keys:
+        st.error(
+            "Missing API key(s): " + ", ".join(missing_keys)
+            + ". Set these in the environment / Streamlit secrets before running."
+        )
+
+    st.markdown("<hr style='margin:0.5rem 0 1rem 0;border:none;border-top:1px solid #e5e7eb'>", unsafe_allow_html=True)
+
+    # Compact persistent badge — visible across all tabs while a step runs.
+    # The full progress card lives inside each step tab (see render_step_tab).
+    header_running_badge()
+
+    def _tab_label(code):
+        info = STEPS[code]
+        if step_output_exists(info["key"]):
+            return f"✓ {info['tab_label']}"
+        return info["tab_label"]
+
+    tabs = st.tabs([
+        "Setup",
+        _tab_label("A1"),
+        _tab_label("B"),
+        _tab_label("C"),
+        _tab_label("D"),
+        "Results",
+    ])
+
+    with tabs[0]:
+        render_setup()
+
+    with tabs[1]:
+        render_step_tab(
+            "A1",
+            description_md=(
+                "Analyzes thousands of news articles to identify structural changes that could "
+                "reshape industries in the next 10–15 years. Articles are grouped by theme, then "
+                "AI writes scenario narratives and scores them on five dimensions: structural depth, "
+                "irreversibility, industry fit, topic relevance, and feasibility."
+            ),
+            note="Article summarization has been pre-processed. Press Run to generate scenarios.",
+        )
+
+    with tabs[2]:
+        render_step_tab(
+            "B",
+            description_md=(
+                "Selects the most useful weak signals to feed into Unexpected Scenarios. "
+                "AI scores each signal on three dimensions (outside the client's area, novelty, "
+                "social impact); the system then ranks and removes near-duplicates. Scores are "
+                "cached, so adjusting weights or the keep-count only re-ranks the existing "
+                "scores — it does not re-run the expensive scoring step."
+            ),
+        )
+
+    with tabs[3]:
+        render_step_tab(
+            "C",
+            description_md=(
+                "Takes the selected weak signals and generates unexpected future scenarios. "
+                "Pick how adventurous the output should be via the combine-mode setting:\n\n"
+                "- **Single theme** — each scenario built from one thematic cluster. Most focused, least surprising.\n"
+                "- **Collide two themes** (default) — pair up two different themes per scenario. Forces cross-domain angles.\n"
+                "- **Mix random signals** — any two unrelated signals thrown together. Wildest, least grounded."
+            ),
+        )
+
+    with tabs[4]:
+        render_step_tab(
+            "D",
+            description_md=(
+                "Combines Expected Scenarios (structural trends) with Unexpected Scenarios "
+                "(surprising futures) to discover business opportunities. AI pairs scenarios from both "
+                "sets, then generates concrete opportunity ideas and scores them on business impact, "
+                "unexpectedness, and plausibility."
+            ),
+        )
+
+    with tabs[5]:
+        render_results()
 
 
 if __name__ == "__main__":
