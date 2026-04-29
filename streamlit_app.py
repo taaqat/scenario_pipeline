@@ -9,6 +9,7 @@ Run:
 import json
 import logging
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -32,9 +33,51 @@ from utils.openai_client import get_openai_client
 logger = logging.getLogger("pipeline")
 
 
+# ─── Auth ───────────────────────────────────────────────
+# Single-password gate. Credentials come from env vars (or Streamlit Cloud
+# secrets, which are also exposed as env vars). When neither is set the gate
+# is disabled — convenient for local dev, but the deploy MUST set both.
+APP_USER = os.getenv("APP_USER", "")
+APP_PASS = os.getenv("APP_PASS", "")
+AUTH_REQUIRED = bool(APP_USER and APP_PASS)
+
+
+def _check_credentials(u: str, p: str) -> bool:
+    # compare_digest avoids timing attacks; overkill for a single shared pass
+    # but cheap and removes a class of theoretical issues.
+    return (
+        secrets.compare_digest(u or "", APP_USER)
+        and secrets.compare_digest(p or "", APP_PASS)
+    )
+
+
+def render_login():
+    """Login page — full-screen form. Only shown when AUTH_REQUIRED and the
+    user hasn't authenticated yet in this session."""
+    st.markdown(
+        "<div style='max-width:380px; margin:5rem auto; text-align:center'>"
+        "<h2 style='margin-bottom:0.25rem'>🔮 AI Scenario Pipeline (JRI x Living Lab+)</h2>"
+        "<div style='color:#6b7280; font-size:0.9rem; margin-bottom:2rem'>Sign in to continue</div>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    _, col, _ = st.columns([1, 2, 1])
+    with col:
+        with st.form("login_form", clear_on_submit=False, border=True):
+            u = st.text_input("Username")
+            p = st.text_input("Password", type="password")
+            ok = st.form_submit_button("Sign in", type="primary", use_container_width=True)
+        if ok:
+            if _check_credentials(u, p):
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("Invalid username or password.")
+
+
 # ─── Page Config ────────────────────────────────────────
 st.set_page_config(
-    page_title="JRI Living Lab+ Pipeline",
+    page_title="AI Scenario Pipeline (JRI x Living Lab+)",
     page_icon="🔮",
     layout="wide",
     initial_sidebar_state="collapsed",
@@ -221,6 +264,77 @@ def sync_sacred_backups() -> None:
                 )
         except Exception as e:
             logger.warning(f"sacred-backup: {fn} sync/restore failed: {e}")
+
+
+# ─── Cumulative cost tracking ────────────────────────────────────────
+# Per-run cost_report.json is written by run_pipeline.save_cost_report() and
+# overwritten on each step. We keep a separate cumulative file under OUTPUT_DIR
+# so the client sees total spend over time, not just the latest run.
+
+def _cum_cost_file() -> Path:
+    return cfg.OUTPUT_DIR / "cost_report_cumulative.json"
+
+
+def _step_bucket(phase_key: str) -> str:
+    """Map per-phase keys (e.g. 'A1-cluster', 'B-diversity') into the four
+    client-facing step buckets. Phase-level detail is intentionally hidden."""
+    p = phase_key.upper()
+    if p.startswith("A1") or p.startswith("A-1"): return "A1"
+    if p.startswith("B"): return "B"
+    if p.startswith("C"): return "C"
+    if p.startswith("D"): return "D"
+    return "other"
+
+
+def merge_run_into_cumulative() -> None:
+    """Read the latest cost_report.json (per-run) and add it into
+    cost_report_cumulative.json. Aggregates phase-level entries into the four
+    step buckets so the UI doesn't expose internal phase names."""
+    per_run = cfg.OUTPUT_DIR / "cost_report.json"
+    if not per_run.exists():
+        return
+    try:
+        cur = read_json(per_run) or {}
+    except Exception:
+        return
+
+    cum_path = _cum_cost_file()
+    cum = {"total": {}, "by_step": {}}
+    if cum_path.exists():
+        try:
+            cum = read_json(cum_path) or cum
+        except Exception:
+            pass
+
+    by_step = cum.get("by_step", {})
+    for phase, v in (cur.get("by_step") or {}).items():
+        bucket = _step_bucket(phase)
+        prev = by_step.get(bucket, {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0})
+        by_step[bucket] = {
+            "calls":         prev.get("calls", 0)         + (v.get("calls") or 0),
+            "input_tokens":  prev.get("input_tokens", 0)  + (v.get("input_tokens") or 0),
+            "output_tokens": prev.get("output_tokens", 0) + (v.get("output_tokens") or 0),
+            "cost_usd":      round(prev.get("cost_usd", 0) + (v.get("cost_usd") or 0), 4),
+        }
+
+    in_  = sum(v.get("input_tokens", 0)  for v in by_step.values())
+    out_ = sum(v.get("output_tokens", 0) for v in by_step.values())
+    cum["by_step"] = by_step
+    cum["total"] = {
+        "calls":         sum(v.get("calls", 0) for v in by_step.values()),
+        "input_tokens":  in_,
+        "output_tokens": out_,
+        "total_tokens":  in_ + out_,
+        "cost_usd":      round(sum(v.get("cost_usd", 0) for v in by_step.values()), 4),
+    }
+
+    try:
+        cfg.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = cum_path.with_suffix(cum_path.suffix + ".tmp")
+        save_json(cum, tmp)
+        os.replace(tmp, cum_path)
+    except Exception as e:
+        logger.warning(f"merge_run_into_cumulative failed: {e}")
 
 
 # ─── Persistence (so ✓ marks + last-run info survive page reload) ───────
@@ -874,6 +988,9 @@ def execute_run(key: str):
         try:
             run_step(key, ov, _phase_cb)
             duration = time.time() - t0
+            # run_step has just refreshed cost_report.json with this run only;
+            # add it into the cumulative file the UI shows the client.
+            merge_run_into_cumulative()
             summary = build_summary(key)
             stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
             if summary is not None:
@@ -1097,50 +1214,47 @@ def render_d_matrix():
 
 
 def render_cost_summary():
-    cost_path = cfg.OUTPUT_DIR / "cost_report.json"
-    if not cost_path.exists():
+    cum_path = _cum_cost_file()
+    if not cum_path.exists():
         return
     try:
-        cost = read_json(cost_path)
+        cost = read_json(cum_path) or {}
     except Exception:
         return
 
-    total = cost.get("total", {})
-    by_step = cost.get("by_step", {})
+    total = cost.get("total", {}) or {}
+    by_step = cost.get("by_step", {}) or {}
     with st.container(border=True):
-        st.markdown("#### 💰 Cost Summary")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total cost (USD)", f"${total.get('cost_usd', 0):.2f}")
-        c2.metric("API calls", f"{total.get('calls', 0):,}")
-        c3.metric("Tokens", f"{total.get('total_tokens', 0):,}")
-
-        if by_step:
-            with st.expander("Per-step breakdown", expanded=False):
-                rows = []
-                def _cost(stats):
-                    try:
-                        return float(stats.get("cost_usd") or 0)
-                    except (ValueError, TypeError):
-                        return 0.0
-                for step, stats in sorted(by_step.items(), key=lambda kv: -_cost(kv[1])):
-                    rows.append({
-                        "Step": step,
-                        "Model": stats.get("model", ""),
-                        "Calls": stats.get("calls", 0),
-                        "Input tokens": f"{stats.get('input_tokens', 0):,}",
-                        "Output tokens": f"{stats.get('output_tokens', 0):,}",
-                        "Cost (USD)": f"${stats.get('cost_usd', 0):.4f}",
-                    })
-                import pandas as pd
-                st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
-
-        st.download_button(
-            "📊 Download cost_report.json",
-            data=json.dumps(cost, indent=2, ensure_ascii=False),
-            file_name=f"cost_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
-            mime="application/json",
-            key="dl_cost_report",
+        st.markdown("#### 💰 Total cost")
+        st.caption("Cumulative across all runs.")
+        st.markdown(
+            f"<div style='font-size:2rem; font-weight:600; color:#10b981; "
+            f"line-height:1.2'>${total.get('cost_usd', 0):.2f}</div>",
+            unsafe_allow_html=True,
         )
+
+        # Per-step breakdown — only the four client-facing buckets, no phases.
+        STEP_LABEL = {
+            "A1": "① Expected Scenarios",
+            "B":  "② Weak Signals",
+            "C":  "③ Unexpected Scenarios",
+            "D":  "④ Opportunities",
+        }
+        rows = []
+        for code, lbl in STEP_LABEL.items():
+            v = by_step.get(code) or {}
+            if (v.get("cost_usd") or 0) > 0:
+                rows.append((lbl, v.get("cost_usd", 0)))
+        if rows:
+            st.markdown("<div style='margin-top:0.75rem'></div>", unsafe_allow_html=True)
+            for lbl, c in rows:
+                cols = st.columns([3, 1])
+                cols[0].markdown(f"<span style='color:#6b7280'>{lbl}</span>", unsafe_allow_html=True)
+                cols[1].markdown(
+                    f"<div style='text-align:right;font-family:ui-monospace,monospace;"
+                    f"color:#374151'>${c:.2f}</div>",
+                    unsafe_allow_html=True,
+                )
 
 
 def render_downloads():
@@ -1378,18 +1492,42 @@ def setup_logging():
 def main():
     setup_logging()
     init_state()
+
+    # Auth gate (does nothing if APP_USER / APP_PASS aren't set)
+    if AUTH_REQUIRED and not st.session_state.get("authenticated"):
+        render_login()
+        return
+
     # Auto-mirror + auto-restore sacred caches before anything else runs, so
     # check_prerequisites and the Run buttons reflect a self-healed state.
     sync_sacred_backups()
 
-    # Header
-    st.markdown(
-        '<h2 style="margin-bottom:0">🔮 JRI Living Lab+ Pipeline</h2>'
-        '<div style="color:#6b7280;font-size:0.9rem;margin-top:0.1rem">'
-        f'Topic: <b>{cfg.TOPIC}</b>'
-        '</div>',
-        unsafe_allow_html=True,
-    )
+    # Header — title on the left, sign-out on the right when auth is enabled
+    hcol1, hcol2 = st.columns([4, 1])
+    with hcol1:
+        st.markdown(
+            '<h2 style="margin-bottom:0">🔮 AI Scenario Pipeline (JRI x Living Lab+)</h2>'
+            '<div style="color:#6b7280;font-size:0.9rem;margin-top:0.1rem">'
+            f'Topic: <b>{cfg.TOPIC}</b>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+    with hcol2:
+        if AUTH_REQUIRED:
+            st.markdown("<div style='margin-top:1.2rem'></div>", unsafe_allow_html=True)
+            if st.button("Sign out", key="sign_out", use_container_width=True):
+                st.session_state.authenticated = False
+                st.rerun()
+        else:
+            st.markdown(
+                "<div style='margin-top:0.5rem; font-size:0.75rem; color:#b45309; "
+                "background:#fffbeb; border:1px solid #fde68a; border-radius:6px; "
+                "padding:0.4rem 0.6rem; text-align:center'>"
+                "⚠ No login set<br>"
+                "<span style='font-size:0.7rem'>set APP_USER / APP_PASS</span>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
 
     # Show API-key warnings only when something is misconfigured, not as a
     # constant green-light — clients don't need to see infra status normally.
