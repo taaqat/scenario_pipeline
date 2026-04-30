@@ -109,7 +109,7 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    .block-container { padding-top: 1.5rem; padding-bottom: 2rem; max-width: 1100px; }
+    .block-container { padding-top: 3rem; padding-bottom: 2rem; max-width: 1100px; }
     h1, h2, h3 { color: #1f2937; }
     .scn-step-header {
         display: flex; align-items: center; gap: 0.5rem;
