@@ -1463,6 +1463,31 @@ def render_pptx():
             )
 
 
+def _ensure_pptx_deps(env: dict) -> tuple[bool, str | None]:
+    """First-run hook for the PPT step on Streamlit Cloud: if node_modules is
+    absent (or pptxgenjs is missing), run `npm install` once. Returns
+    (ok, error_message). Local dev hits this only once after a fresh clone."""
+    pptxgenjs_dir = cfg.BASE_DIR / "node_modules" / "pptxgenjs"
+    if pptxgenjs_dir.exists():
+        return True, None
+    logger.info("PPT: node_modules missing — running `npm install`")
+    try:
+        r = subprocess.run(
+            ["npm", "install", "--no-audit", "--no-fund", "--loglevel=error"],
+            cwd=str(cfg.BASE_DIR),
+            env=env,
+            capture_output=True, text=True, timeout=300,
+        )
+    except FileNotFoundError:
+        return False, "npm not found — cannot install PPT dependencies."
+    except subprocess.TimeoutExpired:
+        return False, "npm install timed out after 5 min — try again."
+    if r.returncode != 0:
+        msg = (r.stderr or r.stdout or "").strip().splitlines()[-1:][:1]
+        return False, f"npm install failed: {(msg[0] if msg else 'unknown error')[:120]}"
+    return True, None
+
+
 def _gen_pptx():
     st.session_state.ppt_status = "Generating..."
     t0 = time.time()
@@ -1480,6 +1505,13 @@ def _gen_pptx():
             "PPTX_BASE": str(subdir),
             "PPTX_LANGS": "ja",
         }
+        ok, dep_err = _ensure_pptx_deps(env)
+        if not ok:
+            st.session_state.ppt_status = (
+                f"Error: {dep_err}  ·  Share this with the LivingLab+ team if it persists."
+            )
+            logger.error(f"PPT dependency install failed: {dep_err}")
+            return
         r = subprocess.run(
             ["node", "generate_pptx.js"],
             cwd=str(cfg.BASE_DIR),
@@ -1500,7 +1532,7 @@ def _gen_pptx():
     except FileNotFoundError:
         st.session_state.ppt_status = (
             "Error: Node.js is not installed on this host. "
-            "PowerPoint generation requires running locally."
+            "Contact the LivingLab+ team to install Node on the deployment."
         )
     except subprocess.TimeoutExpired:
         # Clean up any half-written .pptx the timeout may have left behind so
