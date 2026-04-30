@@ -1,20 +1,16 @@
 """
 Step D: Opportunity Scenario Synthesis
 ======================================
-Three modes (cfg.D_MODE):
-    "random"       — Random 1A + 2C combinations (current default)
-    "select_pairs" — LLM picks ~16 best A×C pairs
-    "matrix"       — Full N_A × N_C grid (exhaustive)
+Phase 1: Random 1A + 2C combinations
 Phase 2: Generate full opportunity scenarios for the selected pairs
 Phase 3: Rank on 3 weighted dims (unexpected / impact / plausibility)
          + pick_final selects top N for diversity
-         + optional Unexpectedness × Impact matrix classification (4 quadrants)
+         + Unexpectedness × Impact matrix classification (4 quadrants)
 """
 import json
 import logging
 import threading
 import hashlib
-from itertools import product
 from pathlib import Path
 
 import pandas as pd
@@ -28,7 +24,7 @@ from utils.data_io import (
     rank_and_select, pick_final,
     compute_pool_size,
 )
-from utils.bilingual import save_split, translate_to_zh, strip_zh
+from utils.bilingual import save_split, strip_zh
 
 logger = logging.getLogger(__name__)
 
@@ -117,177 +113,7 @@ def _normalize_selected_refs(raw_refs, valid_map: dict[str, dict]) -> list[dict]
 
 
 
-# ── Phase 1: Select best A×C pairs ───────────────────
-def phase1_select_pairs(
-    expected: list[dict] = None,
-    unexpected: list[dict] = None,
-) -> list[dict]:
-    """Smart pair selection: give LLM all A and C, pick best collision pairs."""
-    if expected is None:
-        expected = read_json(cfg.OUTPUT_DIR / "A1_expected_scenarios_ja.json")
-    if unexpected is None:
-        unexpected = read_json(cfg.OUTPUT_DIR / "C_unexpected_scenarios_ja.json")
-
-    llm = get_openai_client()
-    llm.set_step("D-select-pairs")
-    prompt_tpl = load_prompt("d_phase1_select_pairs.txt")
-
-    num_pairs = _d_pool_n()
-    num_a, num_c = len(expected), len(unexpected)
-    # Diversity caps — generous enough that LLM won't refuse
-    max_per_a = max(5, (num_pairs * 3) // num_a + 1) if num_a else 5
-    max_per_c = max(5, (num_pairs * 3) // num_c + 1) if num_c else 5
-    min_unique_c = num_c
-
-    # Use sequential IDs (A-1..A-N, C-1..C-N) to avoid confusing LLM with gaps
-    a_id_map = {}  # sequential → original
-    for i, a in enumerate(expected, 1):
-        a_id_map[f"A-{i}"] = a.get("scenario_id")
-    c_id_map = {}
-    for i, c in enumerate(unexpected, 1):
-        c_id_map[f"C-{i}"] = c.get("scenario_id")
-
-    expected_brief = json.dumps(
-        [{"id": f"A-{i}", "title_ja": a.get("title", a.get("title_ja", ""))}
-         for i, a in enumerate(expected, 1)],
-        ensure_ascii=False, indent=1
-    )
-    unexpected_brief = json.dumps(
-        [{"id": f"C-{i}", "title_ja": c.get("title", c.get("title_ja", ""))}
-         for i, c in enumerate(unexpected, 1)],
-        ensure_ascii=False, indent=1
-    )
-
-    target_industries = ", ".join(cfg.CLIENT_PROFILE.get("industries", cfg.CLIENT_PROFILE.get("industries_ja", [])))
-    prompt = (prompt_tpl
-              .replace("{expected_list}", expected_brief)
-              .replace("{unexpected_list}", unexpected_brief)
-              .replace("{num_pairs}", str(num_pairs))
-              .replace("{max_per_a}", str(max_per_a))
-              .replace("{max_per_c}", str(max_per_c))
-              .replace("{min_unique_c}", str(min_unique_c))
-              .replace("{target_industries}", target_industries)
-              .replace("{output_language}", cfg.OUTPUT_LANGUAGE))
-
-    # Try up to 2 times — LLM sometimes returns error analysis instead of pairs.
-    # Keep `original_prompt` immutable so each retry uses a deterministic input.
-    original_prompt = prompt
-    retry_preamble = (
-        "IGNORE ALL PREVIOUS CONSTRAINT ANALYSIS. This is NOT a math problem.\n"
-        "You MUST output a JSON object with a \"pairs\" key containing an array.\n"
-        "Do NOT output any error messages, feasibility analysis, or explanations.\n"
-        "If constraints seem tight, just do your best — approximate solutions are fine.\n"
-        "Coverage is a SOFT GOAL, not a hard requirement.\n\n"
-    )
-    pairs = None
-    for attempt in range(1, 3):
-        attempt_prompt = original_prompt if attempt == 1 else retry_preamble + original_prompt
-        result = llm.call_json(attempt_prompt, model=cfg.RANK_MODEL, max_tokens=16384)
-
-        # OpenAI response_format=json_object always returns dict; unwrap to list
-        if isinstance(result, dict):
-            # Check for "pairs" key first
-            if "pairs" in result and isinstance(result["pairs"], list):
-                pairs = result["pairs"]
-                break
-            # Check if LLM returned error/analysis instead of pairs
-            if "error" in result or not any(isinstance(v, list) for v in result.values()):
-                logger.warning(
-                    f"Phase 1 attempt {attempt}: LLM returned error/analysis instead of pairs. "
-                    f"Keys: {list(result.keys())}. Retrying with forceful prompt..."
-                )
-                continue
-            pairs = next((v for v in result.values() if isinstance(v, list)), [])
-            if pairs:
-                break
-        elif isinstance(result, list):
-            pairs = result
-            break
-
-    if not pairs or not isinstance(pairs, list):
-        logger.error("Phase 1 pair selection failed after retries — empty result")
-        return []
-
-    # Map sequential IDs back to original IDs
-    for p in pairs:
-        p["expected_ids"] = [a_id_map.get(aid, aid) for aid in p.get("expected_ids", [])]
-        p["unexpected_ids"] = [c_id_map.get(cid, cid) for cid in p.get("unexpected_ids", [])]
-
-    # Validate: each pair must have >= 1 A and >= 2 C
-    valid_pairs = []
-    for p in pairs:
-        a_ids = p.get("expected_ids", [])
-        c_ids = p.get("unexpected_ids", [])
-        if len(a_ids) < 1 or len(c_ids) < 2:
-            logger.warning(
-                f"  Pair {p.get('pair_id')}: {len(a_ids)}A + {len(c_ids)}C — "
-                f"below minimum 1A+2C, skipping"
-            )
-        else:
-            valid_pairs.append(p)
-    if len(valid_pairs) < len(pairs):
-        logger.warning(
-            f"Phase 1: {len(pairs) - len(valid_pairs)} pairs rejected "
-            f"(< 2A or < 2C), {len(valid_pairs)} valid"
-        )
-    pairs = valid_pairs
-
-    # ── Constraint validation: check max_per_a / max_per_c ──
-    a_usage: dict[str, int] = {}
-    c_usage: dict[str, int] = {}
-    for p in pairs:
-        for aid in p.get("expected_ids", []):
-            a_usage[aid] = a_usage.get(aid, 0) + 1
-        for cid in p.get("unexpected_ids", []):
-            c_usage[cid] = c_usage.get(cid, 0) + 1
-    overused_a = {aid: cnt for aid, cnt in a_usage.items() if cnt > max_per_a}
-    overused_c = {cid: cnt for cid, cnt in c_usage.items() if cnt > max_per_c}
-    if overused_a:
-        logger.warning(f"⚠ CONSTRAINT: {len(overused_a)} A scenarios exceed max_per_a={max_per_a}: {dict(list(overused_a.items())[:10])}")
-    if overused_c:
-        logger.warning(f"⚠ CONSTRAINT: {len(overused_c)} C scenarios exceed max_per_c={max_per_c}: {dict(list(overused_c.items())[:10])}")
-
-    # ── Coverage validation ──
-    all_a_ids = {a.get("scenario_id") for a in expected}
-    all_c_ids = {c.get("scenario_id") for c in unexpected}
-    used_a_ids = set()
-    used_c_ids = set()
-    for p in pairs:
-        used_a_ids.update(p.get("expected_ids", []))
-        used_c_ids.update(p.get("unexpected_ids", []))
-
-    # A coverage: hard requirement (all must appear)
-    missing_a = all_a_ids - used_a_ids
-    if missing_a:
-        logger.warning(
-            f"⚠ A COVERAGE GAP: {len(missing_a)} Expected Scenarios not in any pair: "
-            f"{sorted(missing_a)}. Prompt requires full A coverage — "
-            f"consider re-running or manually adding pairs."
-        )
-    else:
-        logger.info(f"  A coverage check passed: all {len(all_a_ids)} A scenarios used")
-
-    # C coverage: hard requirement (all must appear)
-    missing_c = all_c_ids - used_c_ids
-    c_coverage_pct = len(used_c_ids) / len(all_c_ids) * 100 if all_c_ids else 0
-    if missing_c:
-        logger.warning(
-            f"⚠ C COVERAGE GAP: {len(missing_c)} Unexpected Scenarios not in any pair "
-            f"({len(used_c_ids)}/{len(all_c_ids)} = {c_coverage_pct:.0f}%). "
-            f"Missing: {sorted(missing_c)[:20]}{'...' if len(missing_c) > 20 else ''}"
-        )
-    else:
-        logger.info(f"  C coverage check passed: all {len(all_c_ids)} C scenarios used")
-
-    for p in pairs:
-        p.setdefault("generation_mode", "select_pairs")
-        p.setdefault("generation_n", num_pairs)
-    save_json(pairs, cfg.INTERMEDIATE_DIR / "d_phase1_pairs.json")
-    logger.info(f"Phase 1 done: {len(pairs)} pairs selected")
-    return pairs
-
-
-# ── Matrix mode: generate all A×C pairs ──────────────
+# ── Phase 1: Random A × C pairing ────────────────────
 def phase1_random_pairs(
     expected: list[dict] = None,
     unexpected: list[dict] = None,
@@ -330,38 +156,11 @@ def phase1_random_pairs(
     return pairs
 
 
-def matrix_all_pairs(
-    expected: list[dict] = None,
-    unexpected: list[dict] = None,
-) -> list[dict]:
-    """Generate all A×C pairs for matrix mode (forced collision)."""
-    if expected is None:
-        expected = read_json(cfg.OUTPUT_DIR / "A1_expected_scenarios_ja.json")
-    if unexpected is None:
-        unexpected = read_json(cfg.OUTPUT_DIR / "C_unexpected_scenarios_ja.json")
-
-    pairs = []
-    for i, (a, c) in enumerate(product(expected, unexpected)):
-        pairs.append({
-            "pair_id": i + 1,
-            "expected_ids": [a.get("scenario_id")],
-            "unexpected_ids": [c.get("scenario_id")],
-            "collision_hypothesis_ja": "",  # no pre-hypothesis in matrix mode
-            "generation_mode": "matrix",
-            "generation_n": len(expected) * len(unexpected),
-        })
-
-    logger.info(f"Matrix mode: {len(pairs)} pairs ({len(expected)}A × {len(unexpected)}C)")
-    save_json(pairs, cfg.INTERMEDIATE_DIR / "d_phase1_pairs.json")
-    return pairs
-
-
 def _is_pairs_checkpoint_fresh(
     pairs_path: Path,
     pairs: list[dict],
     expected: list[dict],
     unexpected: list[dict],
-    mode: str,
 ) -> bool:
     """Return True only when cached pairs are compatible with current A/C inputs."""
     if not isinstance(pairs, list) or not pairs:
@@ -390,20 +189,9 @@ def _is_pairs_checkpoint_fresh(
     if not used_c_ids.issubset(unexpected_ids):
         return False
 
-    # Matrix mode must match exact A×C pair count.
-    if mode == "matrix" and len(pairs) != len(expected) * len(unexpected):
+    # Pair count mismatch: cached N != current pool_n.
+    if len(pairs) != _d_pool_n():
         return False
-
-    # Mode mismatch: cached pairs produced by a different mode are not reusable.
-    pair_modes = {str(p.get("generation_mode", "")) for p in pairs}
-    if pair_modes and pair_modes != {mode}:
-        return False
-
-    # Pair count mismatch (random / select_pairs): cached N != current pool_n.
-    if mode in ("random", "select_pairs"):
-        expected_pool_n = _d_pool_n()
-        if len(pairs) != expected_pool_n:
-            return False
 
     # Cached pairs must be newer than source A/C files.
     try:
@@ -818,11 +606,6 @@ def phase3_rank(scenarios: list[dict] = None) -> list[dict]:
         str(s.get("scenario_id", "")),
     ))
 
-    # Translate and save
-    if getattr(cfg, "TRANSLATE_ENABLED", False):
-        oai = get_openai_client()
-        oai.set_step("D-translate")
-        final = translate_to_zh(final, oai, cfg.TRANSLATE_MODEL)
     save_split(final, cfg.OUTPUT_DIR, "D_opportunity_scenarios")
 
     # Re-export only the C scenarios used in final D scenarios
@@ -912,7 +695,7 @@ def phase3_rank(scenarios: list[dict] = None) -> list[dict]:
 # ── Run All ─────────────────────────────────────────
 def run() -> list[dict]:
     logger.info("=" * 60)
-    logger.info(f"Step D: Opportunity Scenario Synthesis (mode={cfg.D_MODE})")
+    logger.info("Step D: Opportunity Scenario Synthesis")
     logger.info("=" * 60)
 
     expected = read_json(cfg.OUTPUT_DIR / "A1_expected_scenarios_ja.json")
@@ -926,7 +709,7 @@ def run() -> list[dict]:
             logger.warning(f"Failed to read existing Phase 1 pairs ({pairs_path.name}): {e} — re-running Phase 1")
             pairs = None
         else:
-            if _is_pairs_checkpoint_fresh(pairs_path, pairs, expected, unexpected, cfg.D_MODE):
+            if _is_pairs_checkpoint_fresh(pairs_path, pairs, expected, unexpected):
                 logger.info(f"Reusing existing Phase 1 pairs: {len(pairs)} pairs from {pairs_path.name}")
             else:
                 logger.info("Existing Phase 1 pairs are stale/incompatible with current A/C outputs — re-running Phase 1")
@@ -935,12 +718,7 @@ def run() -> list[dict]:
         pairs = None
 
     if pairs is None:
-        if cfg.D_MODE == "random":
-            pairs = phase1_random_pairs(expected, unexpected)
-        elif cfg.D_MODE == "matrix":
-            pairs = matrix_all_pairs(expected, unexpected)
-        else:
-            pairs = phase1_select_pairs(expected, unexpected)
+        pairs = phase1_random_pairs(expected, unexpected)
 
     scenarios = phase2_generate(pairs, expected, unexpected)
     final = phase3_rank(scenarios)

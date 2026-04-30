@@ -24,7 +24,7 @@ from utils.data_io import (
     load_prompt, unwrap_rankings, apply_scores, save_checkpoint_if_due,
     rank_and_select, pick_final, compute_pool_size,
 )
-from utils.bilingual import save_split, translate_to_zh, strip_zh
+from utils.bilingual import save_split, strip_zh
 
 logger = logging.getLogger(__name__)
 
@@ -565,11 +565,6 @@ def phase4_rank(scenarios: list[dict] = None) -> list[dict]:
         topic=cfg.TOPIC, step_label="A1-Phase4",
     )
 
-    # Translate and save
-    if getattr(cfg, "TRANSLATE_ENABLED", False):
-        oai = get_openai_client()
-        oai.set_step("A1-translate")
-        final = translate_to_zh(final, oai, cfg.TRANSLATE_MODEL)
     save_split(final, cfg.OUTPUT_DIR, "A1_expected_scenarios")
 
     df = pd.DataFrame([

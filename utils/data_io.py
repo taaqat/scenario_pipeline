@@ -282,10 +282,7 @@ def pick_final(
     step_label: str = "Pick",
 ) -> list[dict]:
     """Single LLM call: pick K from ranked scenarios, rewrite bad titles in place.
-
-    Replaces the old check_diversity + select_diverse_topk pair. The picker judges
-    score, diversity, duplicate titles, and topic relevance in one shot, and
-    optionally rewrites titles that are too jargony/abstract.
+    Judges score, diversity, duplicate titles, and topic relevance in one shot.
     """
     if not scenarios:
         return []

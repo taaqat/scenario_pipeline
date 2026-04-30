@@ -30,21 +30,12 @@ PRICING = {
     "claude-sonnet-4-6":            (3.00, 15.00),
     "claude-opus-4-6":              (5.00, 25.00),
     "claude-opus-4-5-20250918":     (5.00, 25.00),
-    # Aliases / fallback
-    "claude-haiku":   (1.00,  5.00),
-    "claude-sonnet":  (3.00, 15.00),
-    "claude-opus":    (5.00, 25.00),
 }
 
 def _get_pricing(model: str) -> tuple[float, float]:
     """Get (input_cost, output_cost) per 1M tokens for a model."""
     if model in PRICING:
         return PRICING[model]
-    # Try partial match
-    for key, val in PRICING.items():
-        if key in model or model in key:
-            return val
-    # Default to Sonnet pricing
     logger.warning(f"Unknown model '{model}' — defaulting to Sonnet pricing")
     return (3.00, 15.00)
 

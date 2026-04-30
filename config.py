@@ -29,23 +29,20 @@ if not ANTHROPIC_API_KEY:
     import warnings
     warnings.warn("ANTHROPIC_API_KEY not set — Claude API calls will fail", stacklevel=2)
 
-MODEL_HEAVY  = "claude-opus-4-6"          # cluster, generate, synthesize
-MODEL_STRONG = "claude-sonnet-4-6"        # fallback default (MODEL_PRIMARY alias)
-MODEL_PRIMARY = MODEL_STRONG              # alias used by llm_client
+MODEL_HEAVY = "claude-opus-4-6"           # cluster, generate, synthesize
+MODEL_PRIMARY = "claude-sonnet-4-6"       # default for everything else (used by llm_client)
 MODEL_LIGHT = "claude-haiku-4-5-20251001" # summarize (A1 Phase1)
 MAX_TOKENS = 8192
 
-# OpenAI (Step B + translation)
+# OpenAI (Step B + ranking)
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 if not OPENAI_API_KEY:
     import warnings
     warnings.warn("OPENAI_API_KEY not set — OpenAI API calls will fail", stacklevel=2)
 
-B_MODEL_SCORE     = "gpt-5.4"    # B-score: 301 concurrent batches
+B_MODEL_SCORE     = "gpt-5.4"    # B-score
 B_MODEL_DIVERSITY = "gpt-5.4"    # B-diversity: single large call
-RANK_MODEL        = "gpt-5.4"    # rank / select / score (A1-rank, C-rank, D-select, D-rank)
-TRANSLATE_MODEL   = "gpt-5"   # ja→zh translation (all steps) — 翻譯不需最強模型
-TRANSLATE_ENABLED = False      # Set True to translate ja→zh (adds ~10-20 min per step)
+RANK_MODEL        = "gpt-5.4"    # rank / score (A1-rank, C-rank, D-rank)
 
 # Rate limiting
 RPM_LIMIT = 50          # requests per minute (self-imposed ceiling)
@@ -77,7 +74,7 @@ C_GENERATE_N = None        # Set by topic config
 # For each step:
 #   - *_GENERATE_N (in UI_PARAMS below) is what the CLIENT asks for: "I want N final scenarios"
 #   - we generate min(client_N * OVERGEN_FACTOR, GENERATE_CAP) candidates internally
-#   - rank them all, then select_diverse_topk -> top client_N by score & topic diversity
+#   - rank them all, then pick_final -> top client_N by score & topic diversity
 # OVERGEN_FACTOR is bigger for A1 because A1 needs a larger pool to be diverse
 # (BERTopic produces fewer real clusters when min_cluster_size is high).
 # C/D already use forced collision so 2x is enough.
@@ -95,10 +92,9 @@ C_MODE = "cluster_pair"                    # "cluster" | "cluster_pair" | "signa
 C_WEIGHTS = {"unexpectedness": 1, "social_impact": 1, "uncertainty": 1}  # 0-5 per dim
 
 # ─── Step D: Opportunity Scenarios ───────────────────
-D_MODE = "random"                          # "random" (random A×C pairing) — hybrid retired
 D_GENERATE_N = None        # Set by topic config
-D_WEIGHTS = {"unexpected_score": 1, "impact_score": 1, "plausibility_score": 1}  # all 3 dims weighted; matrix axes still = Unexpectedness × Impact
-D_MATRIX_MODE = True             # If True: classify scenarios into Unexpectedness × Impact matrix
+D_WEIGHTS = {"unexpected_score": 1, "impact_score": 1, "plausibility_score": 1}
+D_MATRIX_MODE = True       # Always-on: classify into Unexpectedness × Impact matrix (4 quadrants)
 
 
 # ─── Project Context (set by topic config) ───────────
@@ -258,8 +254,6 @@ def apply_overrides(overrides: dict):
         elif key == "INDUSTRIES":
             industries = [s.strip() for s in val.split(",") if s.strip()]
             cfg_module.CLIENT_PROFILE["industries"] = industries
-        elif key == "TRANSLATE_ENABLED":
-            cfg_module.TRANSLATE_ENABLED = bool(val)
 
         # A1
         elif key == "A1_GENERATE_N":
@@ -287,8 +281,6 @@ def apply_overrides(overrides: dict):
         # D
         elif key == "D_GENERATE_N":
             cfg_module.D_GENERATE_N = int(val)
-        elif key == "D_MODE":
-            cfg_module.D_MODE = val
         elif key.startswith("D_WEIGHT_"):
             dim = key[len("D_WEIGHT_"):].lower() + "_score"
             cfg_module.D_WEIGHTS[dim] = float(val)

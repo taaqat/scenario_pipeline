@@ -18,7 +18,7 @@ from utils.data_io import (
     chunk_dataframe, df_to_records, chunk_list, is_valid_batch,
     load_prompt,
 )
-from utils.bilingual import save_split, translate_to_zh
+from utils.bilingual import save_split
 
 logger = logging.getLogger(__name__)
 
@@ -348,10 +348,6 @@ def diversity_dedup(candidates: list[dict] = None) -> list[dict]:
     # Final trim
     final = deduped[:cfg.B_TOP_N]
 
-    # Translate and save bilingual split
-    if getattr(cfg, "TRANSLATE_ENABLED", False):
-        llm.set_step("B-translate")
-        final = translate_to_zh(final, llm, cfg.TRANSLATE_MODEL, batch_size=20)
     save_json(final, cfg.INTERMEDIATE_DIR / "b_phase3_dedup_selected.json")
     # Sidecar so downstream can detect topic-mismatch and force re-run.
     cp = getattr(cfg, "CLIENT_PROFILE", {}) or {}

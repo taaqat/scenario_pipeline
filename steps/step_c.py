@@ -20,7 +20,7 @@ from utils.data_io import (
     save_checkpoint_if_due, rank_and_select, pick_final,
     compute_pool_size,
 )
-from utils.bilingual import save_split, translate_to_zh, strip_zh
+from utils.bilingual import save_split, strip_zh
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +123,7 @@ def _normalize_source_signals(
 
 
 
-# ── Phase 1 (cluster mode): K-means clustering ────
+# ── Phase 1 (cluster mode): BERTopic clustering ────
 def phase1_cluster(selected_signals: list[dict] = None) -> list[dict]:
     """
     Cluster selected weak signals into thematic groups.
@@ -509,11 +509,6 @@ def phase3_rank(scenarios: list[dict] = None) -> list[dict]:
         str(s.get("scenario_id", "")),
     ))
 
-    # Translate and save
-    if getattr(cfg, "TRANSLATE_ENABLED", False):
-        oai = get_openai_client()
-        oai.set_step("C-translate")
-        final = translate_to_zh(final, oai, cfg.TRANSLATE_MODEL)
     save_split(final, cfg.OUTPUT_DIR, "C_unexpected_scenarios")
 
     df = pd.DataFrame([

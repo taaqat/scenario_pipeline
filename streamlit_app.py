@@ -6,7 +6,6 @@ Setup → ① Expected → ② Weak Signals → ③ Unexpected → ④ Opportuni
 Run:
     streamlit run streamlit_app.py
 """
-import json
 import logging
 import os
 import secrets
@@ -182,8 +181,8 @@ STEPS = {
     },
 }
 
-# Params hidden from UI (translation removed; matrix view is always-on)
-HIDDEN_PARAMS = {"TRANSLATE_ENABLED", "D_MATRIX_MODE"}
+# Params hidden from UI (matrix view is always-on, no need to expose toggle).
+HIDDEN_PARAMS = {"D_MATRIX_MODE"}
 
 # Output filename pattern per step (used for ✓ markers + download buttons)
 STEP_OUTPUT = {
@@ -1201,7 +1200,7 @@ def render_setup():
     with st.container(border=True):
         st.markdown("#### 🌐 Research Settings")
         st.caption("These settings affect all steps. Adjust before running.")
-        render_settings_section("Global", exclude={"TRANSLATE_ENABLED"})
+        render_settings_section("Global")
 
     with st.container(border=True):
         st.markdown("#### 📁 Data")

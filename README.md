@@ -1,9 +1,8 @@
-# AI Scenario Pipeline
+# AI Scenario Pipeline (JRI × III Living Lab+)
 
 未來情境分析自動化 Pipeline — 支援多題目切換。
 
-新接手的工程師請先讀 [`HANDOFF.md`](HANDOFF.md)。
-詳細流程請看 [`pipeline_flow_document.md`](pipeline_flow_document.md)。
+詳細的 Streamlit 部署 / 操作指南見 [`STREAMLIT_GUIDE.md`](STREAMLIT_GUIDE.md)。
 
 ---
 
@@ -11,16 +10,16 @@
 
 ```
 Articles ──→ [A1] Summarize(Haiku) → BERTopic Cluster + Label(Opus) → Generate(Opus) → Rank + pick_final(gpt-5.4) ──→ Expected Scenarios ──┐
-                                                                                                                                              ├─→ [D] Pair Select(gpt-5.4) → Generate(Opus) → Rank + pick_final(gpt-5.4) → Opportunity Scenarios + Matrix
+                                                                                                                                              ├─→ [D] Random Pairing → Generate(Opus) → Rank + pick_final + Matrix(gpt-5.4) → Opportunity Scenarios
 Weak Signals ──→ [B] Score(gpt-5.4) → Re-rank by weights → Diversity Dedup(gpt-5.4) ──→ Selected Signals ──→ [C] BERTopic Cluster + Label(Opus) → Generate(Opus) → Rank + pick_final(gpt-5.4) ──→ Unexpected Scenarios ──┘
 ```
 
 關鍵點：
 - A1 / C / D 由 UI 設定交付數 N，系統 over-generate `pool_n = min(N × overgen_factor, cap)` 個候選後 `pick_final` 選 top N
 - B Phase 1 評分結果 cache 後可重用，改 weights / N 不會觸發重評
-- D 讀取 A1 / C 的 output JSON（pick_final 後的最終版）做 A×C 配對
+- D 讀取 A1 / C 的 output JSON（pick_final 後的最終版）做隨機 A×C 配對
 - Cluster 用 **BERTopic（UMAP + HDBSCAN）**，LLM 負責命名
-- 預設只產出日文版；要中文翻譯把 `TRANSLATE_ENABLED=True` 並加回 UI toggle
+- 輸出只有日文版
 
 ---
 
@@ -44,29 +43,14 @@ cp .env.example .env
 
 ## Run
 
-### Web UI（NiceGUI）
+### Streamlit Web UI（部署主流）
 
 ```bash
-python app.py
-# → http://localhost:8080
-# 預設帳密 jri / livinglab2026（部署前請改，見 HANDOFF.md）
-```
-
-### Streamlit Web UI（部署推薦）
-
-```bash
-# 方式 1：直接運行
 streamlit run streamlit_app.py
-
-# 方式 2：使用啟動腳本
-./start_streamlit.sh
-
-# 方式 3：Docker 部署
-docker-compose up -d
-
 # → http://localhost:8501
-# 詳見 STREAMLIT_GUIDE.md
 ```
+
+詳見 [`STREAMLIT_GUIDE.md`](STREAMLIT_GUIDE.md)（部署到 Streamlit Cloud 的設定也在裡面）。
 
 ### CLI
 
@@ -124,11 +108,9 @@ python run_pipeline.py --step a1 --phase 4   # 排序 + pick_final
 | C Phase 1 | BERTopic cluster labeling | Claude Opus 4.6 |
 | C Phase 2 | Scenario generation | Claude Opus 4.6 |
 | C Phase 3 | Ranking + pick_final | gpt-5.4 |
-| D Phase 1 | Pair selection | gpt-5.4 |
 | D Phase 2 | Opportunity generation | Claude Opus 4.6 |
 | D Phase 3 | Ranking + pick_final | gpt-5.4 |
-| Embedding | Clustering input | text-embedding-3-small (OpenAI) |
-| Translation (optional) | ja → zh | gpt-5 |
+| Embedding | Clustering input | text-embedding-3-large (OpenAI) |
 
 ---
 
@@ -144,9 +126,8 @@ python run_pipeline.py --step a1 --phase 4   # 排序 + pick_final
 | C scenarios referenced by D | `C_used_in_D_ja.json` |
 | Opportunity Scenarios | `D_opportunity_scenarios_ja.json`, `.xlsx` |
 | Cost report (per run) | `cost_report.json` |
-| PowerPoint deck | `JRI_Aging_Report_ja.pptx` (Web UI 按鈕生成) |
-
-開啟 `TRANSLATE_ENABLED=True` 時會多出 `_zh.json` 對應檔。
+| Cost report (cumulative) | `cost_report_cumulative.json` |
+| PowerPoint deck | `JRI_Aging_Report_ja.pptx`（Streamlit Generate PPT 鈕） |
 
 ---
 
@@ -154,49 +135,24 @@ python run_pipeline.py --step a1 --phase 4   # 排序 + pick_final
 
 ```
 scenario_pipeline/
-├── HANDOFF.md                      # 給接手工程師的部署指南（先讀這個）
 ├── README.md                       # 本檔
-├── STREAMLIT_GUIDE.md              # Streamlit 完整部署指南
-├── pipeline_flow_document.md       # 流程說明書
-├── CLAUDE_CODE_GUIDE.md            # Claude Code 操作 guide
+├── STREAMLIT_GUIDE.md              # Streamlit 部署 / 操作指南
 ├── .env.example                    # API key 範本
 ├── requirements.txt                # Python 依賴
+├── packages.txt                    # Streamlit Cloud apt 依賴 (nodejs/npm)
 ├── package.json                    # Node 依賴 (pptxgenjs)
-├── Dockerfile                      # Docker 部署配置
-├── docker-compose.yml              # Docker Compose 配置
-├── start_streamlit.sh              # Streamlit 啟動腳本
+├── Dockerfile / docker-compose.yml # Docker 部署
+├── start_streamlit.sh              # 本機啟動腳本
 ├── config.py                       # 全域設定 + UI_PARAMS + apply_overrides
-├── app.py                          # NiceGUI Web UI
 ├── streamlit_app.py                # Streamlit Web UI
 ├── run_pipeline.py                 # CLI 入口 + save_cost_report
 ├── generate_pptx.js                # PowerPoint 產生（Node）
-├── validate_output.py              # 輸出驗證
-├── audit_pptx.py                   # PPTX 審查工具
-├── run_smoke.py                    # End-to-end smoke test
-├── test_checkpoint.py              # B Phase 1 cache 測試（沙箱模式）
-├── .streamlit/
-│   └── config.toml                 # Streamlit 配置
+├── .streamlit/config.toml          # Streamlit 配置
 ├── configs/
 │   ├── jri_aging.py                # 預設 topic
 │   └── energy.py                   # 範例 topic
-├── prompts/                        # 13 個 LLM prompt 模板
-├── steps/
-│   ├── step_a1.py
-│   ├── step_b.py
-│   ├── step_c.py
-│   └── step_d.py
-├── utils/
-│   ├── llm_client.py               # Claude wrapper + CostTracker
-│   ├── openai_client.py            # OpenAI wrapper
-│   ├── data_io.py                  # rank_and_select / pick_final / apply_scores
-│   ├── clustering.py               # BERTopic + build_cluster_dicts
-│   └── bilingual.py                # ja↔zh 翻譯與儲存
-├── clients need/                   # JRI 客戶 spec 文件（修改 prompt 前必看）
-│   ├── final_criteria_v2.md
-│   ├── 20250509 LivingLab+JRI.pptx
-│   └── (signed QUOTATION)*.pdf
-└── data/
-    ├── input/                      # 客戶提供的 Excel
-    ├── intermediate/               # cache + checkpoint（git-ignored）
-    └── output/                     # 最終產出（git-ignored）
+├── prompts/                        # LLM prompt 模板
+├── steps/                          # step_a1 / step_b / step_c / step_d
+├── utils/                          # llm_client / openai_client / data_io / clustering / bilingual
+└── data/                           # input / intermediate / output（皆 gitignored）
 ```
