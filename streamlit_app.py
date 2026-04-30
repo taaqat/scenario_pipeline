@@ -32,6 +32,31 @@ from utils.openai_client import get_openai_client
 
 logger = logging.getLogger("pipeline")
 
+# Attach handlers to the loggers that step functions use. We do this directly
+# (instead of basicConfig on the root logger) because Streamlit's runtime
+# already configures the root logger before user code runs, so basicConfig
+# becomes a no-op. Idempotent: tagged handlers are skipped on script reruns.
+def _setup_pipeline_logging() -> None:
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    log_path = Path(__file__).parent / "pipeline.log"
+    for name in ("pipeline", "steps", "utils"):
+        lg = logging.getLogger(name)
+        lg.setLevel(logging.INFO)
+        if any(getattr(h, "_pipeline_tag", False) for h in lg.handlers):
+            continue
+        fh = logging.FileHandler(log_path, encoding="utf-8")
+        fh.setFormatter(fmt)
+        fh._pipeline_tag = True  # type: ignore[attr-defined]
+        sh = logging.StreamHandler()
+        sh.setFormatter(fmt)
+        sh._pipeline_tag = True  # type: ignore[attr-defined]
+        lg.addHandler(fh)
+        lg.addHandler(sh)
+        lg.propagate = False  # avoid duplicate emission via root
+
+
+_setup_pipeline_logging()
+
 
 # ─── Auth ───────────────────────────────────────────────
 # Single-password gate. Credentials come from env vars (or Streamlit Cloud
