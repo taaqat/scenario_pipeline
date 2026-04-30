@@ -10,6 +10,11 @@ port = 8501
 headless = true
 enableCORS = false
 maxUploadSize = 200
+# Disable hot-reload watcher: production doesn't need it, and BERTopic
+# pulls in transformers, whose ~hundreds of image_processing_*_fast
+# submodules each try to import torchvision (not installed on Cloud) when
+# the watcher introspects them — generating massive log noise.
+fileWatcherType = "none"
 
 [browser]
 gatherUsageStats = false
