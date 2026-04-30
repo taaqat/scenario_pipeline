@@ -8,6 +8,7 @@ numpy>=1.24.0
 nicegui>=2.0.0
 streamlit>=1.36.0
 plotly>=5.18.0
+gdown>=5.0.0
 # BERTopic clustering (A1 Phase 2 + C Phase 1)
 bertopic>=0.16.0
 umap-learn>=0.5.5

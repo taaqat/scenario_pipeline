@@ -214,6 +214,72 @@ def _sacred_backup_dir() -> Path:
     return Path.home() / ".cache" / "scenario_pipeline_sacred" / cfg.OUTPUT_DIR.name
 
 
+def bootstrap_data_from_bundle() -> None:
+    """First-run hook: if sacred caches are missing AND DATA_BUNDLE_URL is
+    set, download the bundle (zip) and extract it under BASE_DIR. Idempotent
+    — exits silently when files are already present.
+
+    Setup steps for the operator:
+      1. Pack the data files into a zip preserving paths, e.g.::
+           cd <project root>
+           zip data_bundle.zip \\
+               data/intermediate/jri_aging/a1_phase1_summaries.json \\
+               data/intermediate/jri_aging/a1_phase1_checkpoint.json \\
+               data/intermediate/jri_aging/b_phase1_scored.json   \\
+               data/intermediate/jri_aging/b_phase1_checkpoint.json \\
+               data/input/jri_aging/*.xlsx
+      2. Upload to Google Drive, share as "Anyone with the link → Viewer".
+      3. Copy the share URL into the DATA_BUNDLE_URL env var (Streamlit
+         Cloud Secrets locally → settings → secrets).
+      4. The URL is the access token; keep it out of git and chat logs.
+    """
+    bundle_url = os.getenv("DATA_BUNDLE_URL", "").strip()
+    if not bundle_url:
+        return  # No bundle configured — assume local files are already present.
+
+    # Idempotent: skip when all sacred caches are already on disk.
+    if all((cfg.INTERMEDIATE_DIR / fn).exists() for fn in SACRED_CACHES):
+        return
+
+    try:
+        import gdown
+    except ImportError:
+        logger.error("DATA_BUNDLE_URL is set but `gdown` is not installed; cannot fetch bundle.")
+        return
+
+    import zipfile
+    cache_zip = Path("/tmp") / "scenario_data_bundle.zip"
+
+    logger.warning("bootstrap: sacred caches missing — downloading data bundle from DATA_BUNDLE_URL")
+    try:
+        # gdown 6.x: pass the share URL via `url=`. For Google Drive links it
+        # auto-extracts the file ID and handles the confirm-token redirect.
+        gdown.download(url=bundle_url, output=str(cache_zip), quiet=False)
+    except Exception as e:
+        logger.error(f"bootstrap: download failed: {e}")
+        return
+
+    if not cache_zip.exists() or cache_zip.stat().st_size < 1024:
+        logger.error("bootstrap: download did not produce a valid file (probably wrong URL or share permission)")
+        return
+
+    try:
+        with zipfile.ZipFile(cache_zip) as zf:
+            zf.extractall(cfg.BASE_DIR)
+        logger.info(
+            f"bootstrap: extracted bundle ({cache_zip.stat().st_size // 1024} KB) into {cfg.BASE_DIR}"
+        )
+    except zipfile.BadZipFile as e:
+        logger.error(f"bootstrap: bundle is not a valid zip: {e}")
+    except Exception as e:
+        logger.error(f"bootstrap: extraction failed: {e}")
+    finally:
+        try:
+            cache_zip.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 def sync_sacred_backups() -> None:
     """Two-way sync of sacred phase-1 caches between data/intermediate/ and a
     user-home mirror.
@@ -1497,6 +1563,10 @@ def main():
     if AUTH_REQUIRED and not st.session_state.get("authenticated"):
         render_login()
         return
+
+    # First-run on cloud: pull data files from the GDrive bundle if missing.
+    # On local dev with files in place, this is a no-op.
+    bootstrap_data_from_bundle()
 
     # Auto-mirror + auto-restore sacred caches before anything else runs, so
     # check_prerequisites and the Run buttons reflect a self-healed state.
