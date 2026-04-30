@@ -157,8 +157,8 @@ STEPS = {
     },
 }
 
-# Params hidden from UI (translation removed; SMOKE_TEST is dev-only)
-HIDDEN_PARAMS = {"TRANSLATE_ENABLED"}
+# Params hidden from UI (translation removed; matrix view is always-on)
+HIDDEN_PARAMS = {"TRANSLATE_ENABLED", "D_MATRIX_MODE"}
 
 # Output filename pattern per step (used for ✓ markers + download buttons)
 STEP_OUTPUT = {
@@ -486,12 +486,17 @@ def init_state():
     for k, spec in UI_PARAMS.items():
         if k in HIDDEN_PARAMS:
             continue
-        if k in st.session_state:
-            continue
-        if k in defaults:
-            st.session_state[k] = defaults[k]
-        else:
-            st.session_state[k] = spec["default"]
+        default_val = defaults.get(k, spec["default"])
+        current = st.session_state.get(k)
+        # Set if not present, OR if a text widget is sitting on an empty/
+        # whitespace value while a default exists. The latter handles stale
+        # sessions from before defaults were wired up, and the case where the
+        # user cleared a required field — reverting to the default is more
+        # helpful than letting them sit on an obviously-broken empty input.
+        is_text = spec.get("type") == "text"
+        is_empty_text = is_text and not str(current or "").strip() and default_val
+        if current is None or is_empty_text:
+            st.session_state[k] = default_val
 
     # Per-run state
     st.session_state.setdefault("running", False)
@@ -554,6 +559,7 @@ def render_param(key: str, spec: dict):
     """Render a single UI_PARAMS row. The widget reads/writes session_state[key]."""
     label = spec["label"]
     hint = spec.get("hint", "")
+    suffix = spec.get("label_suffix", "")
     typ = spec["type"]
 
     if typ == "number":
@@ -571,7 +577,7 @@ def render_param(key: str, spec: dict):
             )
         else:
             st.number_input(
-                label,
+                f"{label}{suffix}" if suffix else label,
                 min_value=spec.get("min", 0),
                 max_value=spec.get("max", 1_000_000),
                 step=1,
@@ -591,7 +597,13 @@ def render_param(key: str, spec: dict):
             help=hint or None,
         )
     elif typ == "text":
-        st.text_input(label, key=key, help=hint or None)
+        # Pass `value=` as a belt-and-suspenders default. Streamlit uses it
+        # only on the widget's very first render; after that session_state
+        # [key] takes over. Without it, a stale empty-string entry from a
+        # prior session/hot-reload could render as a blank input even when
+        # cfg.TOPIC etc. are correctly set.
+        fallback = st.session_state.get(key) or spec.get("default") or ""
+        st.text_input(label, value=fallback, key=key, help=hint or None)
 
 
 def render_settings_section(section: str, exclude: set | None = None):
@@ -1169,8 +1181,8 @@ def render_setup():
     with st.container(border=True):
         st.markdown("#### 📁 Data")
         st.caption(
-            "These datasets are pre-loaded by JRI for this engagement and "
-            "cannot be modified from this UI."
+            "These datasets are pre-loaded for this engagement and cannot be "
+            "modified from this UI."
         )
         DISPLAY_COUNTS = {"News articles": 6135, "Weak signals": 9004}
         for f, label in [(cfg.A1_INPUT_FILE, "News articles"), (cfg.B_INPUT_FILE, "Weak signals")]:
@@ -1645,7 +1657,6 @@ def main():
                 "AI writes scenario narratives and scores them on five dimensions: structural depth, "
                 "irreversibility, industry fit, topic relevance, and feasibility."
             ),
-            note="Article summarization has been pre-processed. Press Run to generate scenarios.",
         )
 
     with tabs[2]:
@@ -1653,10 +1664,10 @@ def main():
             "B",
             description_md=(
                 "Selects the most useful weak signals to feed into Unexpected Scenarios. "
-                "AI scores each signal on three dimensions (outside the client's area, novelty, "
-                "social impact); the system then ranks and removes near-duplicates. Scores are "
-                "cached, so adjusting weights or the keep-count only re-ranks the existing "
-                "scores — it does not re-run the expensive scoring step."
+                "AI scores each signal on three dimensions (outside the client's area, "
+                "novelty, social impact); the system then ranks them with the weights you "
+                "set below and removes near-duplicates. Adjusting the weights gives you a "
+                "different set of selected signals."
             ),
         )
 
@@ -1664,11 +1675,12 @@ def main():
         render_step_tab(
             "C",
             description_md=(
-                "Takes the selected weak signals and generates unexpected future scenarios. "
-                "Pick how adventurous the output should be via the combine-mode setting:\n\n"
-                "- **Single theme** — each scenario built from one thematic cluster. Most focused, least surprising.\n"
-                "- **Collide two themes** (default) — pair up two different themes per scenario. Forces cross-domain angles.\n"
-                "- **Mix random signals** — any two unrelated signals thrown together. Wildest, least grounded."
+                "Combines weak signals into unexpected future scenarios. "
+                "The **combine-mode** setting below decides which signals to pair "
+                "up for each scenario:\n\n"
+                "- **One topic per scenario** — pairs signals on similar topics. Most focused.\n"
+                "- **Two topics per scenario** (default) — pairs signals from two different topic groups (e.g. one on health, one on energy). Best for cross-domain ideas.\n"
+                "- **Random signals** — pairs any two signals regardless of topic. Wildest."
             ),
         )
 
