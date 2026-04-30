@@ -34,6 +34,9 @@ A scenario that "borrows the shape" of a C without depending on its specific mec
 The following industries are the focus of this analysis. When writing implications, approach, and transformation points, prioritize the industries most affected by this opportunity:
 {target_industries_ja}
 
+⚠ INDUSTRY TAG RULE — STRICT
+Whenever you emit an `[Industry]` tag (in implications, approach, transformation), the label MUST be copied verbatim from the list above. Do NOT translate, expand, abbreviate, or rephrase the label — even if you think a longer or more accurate Japanese term exists. Example: use `[電機]` exactly as listed; do NOT write `[電子・電気機器]` or `[電機・電子]`. Inconsistent tag wording across the report is a defect.
+
 # Output Field Specifications
 
 ## Selected Input Scenarios
