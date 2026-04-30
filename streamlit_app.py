@@ -873,7 +873,7 @@ def run_step(key: str, ov: dict, phase_cb):
         from steps.step_d import phase1_random_pairs, phase2_generate, phase3_rank
         exp = read_json(cfg.OUTPUT_DIR / "A1_expected_scenarios_ja.json")
         unexp = read_json(cfg.OUTPUT_DIR / "C_unexpected_scenarios_ja.json")
-        phase_cb("④ 1/3 — Pairing scenarios...", 1, 3)
+        phase_cb("④ 1/3 — Pairing Expected × Unexpected scenarios...", 1, 3)
         pairs = phase1_random_pairs(exp, unexp)
         phase_cb("④ 2/3 — Generating opportunities...", 2, 3)
         sc = phase2_generate(pairs, exp, unexp)
@@ -1655,18 +1655,17 @@ def main():
     # The full progress card lives inside each step tab (see render_step_tab).
     header_running_badge()
 
-    def _tab_label(code):
-        info = STEPS[code]
-        if step_output_exists(info["key"]):
-            return f"✓ {info['tab_label']}"
-        return info["tab_label"]
-
+    # Tab labels MUST stay stable across reruns. Streamlit identifies tabs by
+    # their label string; if we toggle a "✓" prefix when a step completes, the
+    # active-tab selection is lost on the rerun that follows the run, dumping
+    # the user back to the first tab. Done-status is already visible in each
+    # tab's result card.
     tabs = st.tabs([
         "Setup",
-        _tab_label("A1"),
-        _tab_label("B"),
-        _tab_label("C"),
-        _tab_label("D"),
+        STEPS["A1"]["tab_label"],
+        STEPS["B"]["tab_label"],
+        STEPS["C"]["tab_label"],
+        STEPS["D"]["tab_label"],
         "Results",
     ])
 
@@ -1716,7 +1715,16 @@ def main():
                 "Combines Expected Scenarios (structural trends) with Unexpected Scenarios "
                 "(surprising futures) to discover business opportunities. AI pairs scenarios from both "
                 "sets, then generates concrete opportunity ideas and scores them on business impact, "
-                "unexpectedness, and plausibility."
+                "unexpectedness, and plausibility.\n\n"
+                "**Opportunity matrix** — every opportunity is plotted on an "
+                "**Unexpectedness × Business Impact** chart. The split uses the "
+                "median of each axis across this run's opportunities, so the four "
+                "quadrants describe *relative* positioning within the set:\n\n"
+                "- **Breakthrough** — high unexpectedness **and** high impact. Bold bets worth pursuing.\n"
+                "- **Surprising** — high unexpectedness, lower impact. Provocative but narrower upside.\n"
+                "- **Incremental** — high impact, lower unexpectedness. Solid but already on the radar.\n"
+                "- **Low Priority** — below median on both. Defer or drop.\n\n"
+                "Quadrant labels appear in the Results tab next to each opportunity."
             ),
         )
 
